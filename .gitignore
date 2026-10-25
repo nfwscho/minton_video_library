@@ -1,39 +1,99 @@
-# Python virtual env and bytecode
+# Minton Video Library - Git ignore rules
+# Keep the Python source and Markdown guides in Git.
+# Keep personal notes, downloaded media, caches and credentials OUT of Git.
+
+# Python virtual environments
 .venv/
 venv/
+env/
+ENV/
+
+# Python bytecode / build / test artifacts
 __pycache__/
 *.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
 
-# Local logs and session data
-preview_cache/
-vlc_alias/
+# Editors, OS and temporary files
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo
+*~
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+*.bak
+
+# Local environment, authentication, cookies and personal configuration
+.env
+.env.*
+!.env.example
+cookies.txt
+*cookies*.txt
+*.cookies
+*.secret
+*.key
+
+# SQLite user state (settings / queue / per-video memos)
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Logs and downloaded data when the download folder is inside this repo
 logs/
+data/
+downloads/
+media/
+videos/
 *.log
-*.bcut.json
-*.bcut.json.tmp
+*.log.*
+*.part
+*.part-*
+*.ytdl
+*.temp
 
-# Generated video and AI training output
+# Video, audio, thumbnail, subtitles and yt-dlp metadata
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.avi
+*.m4v
+*.flv
+*.ts
+*.mp3
+*.m4a
+*.opus
+*.wav
 *.srt
 *.vtt
+*.ass
+*.ssa
+*.lrc
+*.info.json
+*.description
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.avif
+*.gif
 
-*_clips/
-*.part.mp4
-*.mp4
-*.mov
-*.avi
-*.mkv
-*.webm
-*.m4v
-clips_manifest_*.json
-clips_manifest_*.csv
-
-# IDE/OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# Local V1.3 source backups
-*.backup.py
+# Note: Files in %LOCALAPPDATA%\MintonVideoLibrary are already outside
+# the repository. Git ignore rules do not replace data backups.

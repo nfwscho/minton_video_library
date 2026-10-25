@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Minton Video Library v1.0 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
+Minton Video Library v1.1 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
 =====================================================================
 [프로그램 전체 기능 및 동작 보존 목록]
 01. Windows Python 3.12 + PySide6 기반 단일 Python 소스 GUI.
@@ -36,6 +36,24 @@ Minton Video Library v1.0 | 배드민턴 유튜브 영상 다운로드 및 관�
 28. Windows 콘솔창 없이 yt-dlp subprocess 실행, 한글 Unicode 경로 지원.
 29. 삭제 버튼은 대기열 항목만 제거하며 실제 비디오 파일/메모는 보존.
 30. 저작권과 이용약관을 준수하는 영상만 다운로드하도록 사용자에게 안내.
+
+[V1.1 추가/수정 - 기존 V1.0의 기능 및 모든 로그 유지]
+31. ?v=영상ID&list=목록ID 및 youtu.be?list 혼합 주소를 재생목록 우선 인식.
+32. 재생목록 정보를 개별 다운로드 작업에 유지: 채널명/재생목록명/영상.
+33. 채널·제목 메타데이터를 한국어 우선으로 요청(youtube:lang=ko).
+34. URL 등록 시 채널 폴더명/재생목록 폴더명을 수동 지정 가능.
+35. 재생목록 별로 동일 영상 URL을 별도 대기열 항목으로 관리.
+36. 라이브러리 15초 간격 누락 확인 및 60초 간격 폴더 자동 재검색.
+37. 실제 파일 삭제 시 라이브러리 기본 보기에서 자동 숨김, 메모 DB 보존;
+    '누락 포함' 체크로 조회 가능, 다시 찾은 동일 ID는 메모 복구.
+38. 영상과 연관된 자막/info.json을 함께 지정 폴더로 이동하거나 휴지통 삭제.
+39. 영상·연관 자막 파일명을 한글 제목으로 변경, 수동 제목 유지.
+40. 라이브러리의 각 컬럼 수동 너비 조절 및 너비 저장/툴팁/가로 스크롤.
+41. 대기열 행별 진행률 바와 전체 현재 파일 진행률 바 추가.
+42. 자막 파일 탐색: 동일 basename뿐 아니라 동일 YouTube ID 또는 근사 이름.
+43. 전체 자막 목록의 별도 큰 창/자막 검색/더블클릭 구간 점프.
+44. 동영상 준비(LoadedMedia/BufferedMedia) 후 지연 탐색 적용 및 재생.
+45. 상태 변경/폴더 이동/파일 누락/이름변경 등 추가 로그; 기존 메시지 유지.
 
 [저장 위치]
 - 프로그램: D:\\stockproj\\minton_video_library\\minton_video_library.py (권장)
@@ -73,7 +91,7 @@ import time
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
-from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, QFile
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -82,16 +100,21 @@ from PySide6.QtWidgets import (
     QLineEdit, QListWidget, QMainWindow, QMessageBox, QPlainTextEdit,
     QProgressBar, QPushButton, QSlider, QSpinBox, QSplitter, QTabWidget,
     QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget,
-    QHeaderView, QAbstractItemView,
+    QHeaderView, QAbstractItemView, QCheckBox, QDialog, QInputDialog, QListWidgetItem,
 )
 
-APP_TITLE = "Minton Video Library v1.0"
+APP_TITLE = "Minton Video Library v1.1"
 APP_DATA = Path(os.getenv("LOCALAPPDATA") or (Path.home() / ".local" / "share")) / "MintonVideoLibrary"
 DB_PATH = APP_DATA / "library.db"
 LOG_PATH = APP_DATA / "logs" / "minton_video_library.log"
 DEFAULT_ROOT = r"D:\99.유튜브다운\minton.youtube" if os.name == "nt" else str(Path.home() / "Videos" / "minton.youtube")
 FORMAT_SELECTOR = "bv[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=1080]"
 OUTPUT_TEMPLATE = "%(channel)s/%(channel)s - %(title)s [%(id)s] - %(upload_date>%Y-%m-%d)s.%(ext)s"
+FILE_TEMPLATE = "%(channel)s - %(title)s [%(id)s] - %(upload_date>%Y-%m-%d)s.%(ext)s"
+# 사용자가 정확한 이름을 직접 확인해 준 재생목록. 일반 목록은 ko 우선 메타데이터 사용.
+KOREAN_PLAYLIST_OVERRIDES = {
+    'PLX1IndZwkjj0': ('윤이콕TV', '물A조라고 놀리지말아요'),
+}
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
 YT_ID_PATTERN = re.compile(r"\[([A-Za-z0-9_-]{11})\]")
 SRT_PATTERN = re.compile(r"(\d\d):(\d\d):(\d\d)[,.](\d{1,3})\s*-->\s*(\d\d):(\d\d):(\d\d)[,.](\d{1,3})")
@@ -149,6 +172,25 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel);
         UPDATE jobs SET status='queued', progress=0 WHERE status='running';
         """)
+        # SQLite 구버전 DB는 보존하면서 필요한 컬럼만 안전하게 추가한다.
+        migrations = {
+            'jobs': {
+                'playlist_id': "TEXT NOT NULL DEFAULT ''",
+                'playlist_title': "TEXT NOT NULL DEFAULT ''",
+                'playlist_channel': "TEXT NOT NULL DEFAULT ''",
+                'playlist_index': 'INTEGER NOT NULL DEFAULT 0',
+                'channel_override': "TEXT NOT NULL DEFAULT ''",
+                'playlist_override': "TEXT NOT NULL DEFAULT ''",
+            },
+            'videos': {'title_override': "TEXT NOT NULL DEFAULT ''"},
+        }
+        for table, columns in migrations.items():
+            existing = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
+            for name, definition in columns.items():
+                if name not in existing:
+                    db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
+                    LOGGER.info('[DB 마이그레이션] %s.%s 컬럼 추가', table, name)
+
 
 
 def get_setting(db: sqlite3.Connection, key: str, default: str = "") -> str:
@@ -174,33 +216,121 @@ def yt_command() -> list[str] | None:
 
 
 def canonical_url(value: str) -> tuple[str, str] | None:
-    """(중복이 제거된 URL, kind). 외부 URL/임의 명령 실행 방지."""
+    """(정규화 URL, 종류). URL에 list=가 있으면 watch?v보다 우선한다.
+
+    재생목록 링크가 watch?v=...&list=... 형식으로 들어와도 /playlist?list=...
+    로 바꿔 처리하므로 개별 영상만 받는 문제를 방지한다.
+    """
     try:
-        p = urlparse(value.strip())
-        host = (p.hostname or "").lower()
-        if p.scheme not in ("http", "https") or host not in (
-            "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"
+        p = urlparse(value.strip().replace('\\&', '&'))
+        host = (p.hostname or '').lower()
+        if p.scheme not in ('http', 'https') or host not in (
+            'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'
         ):
             return None
         q = parse_qs(p.query)
-        if host == "youtu.be":
-            vid = p.path.strip("/").split("/")[0]
-            if re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
-                return f"https://www.youtube.com/watch?v={vid}", "video"
-        vid = (q.get("v") or [""])[0]
-        pl = (q.get("list") or [""])[0]
-        if p.path.rstrip("/") == "/playlist" and pl:
-            return f"https://www.youtube.com/playlist?list={pl}", "playlist"
-        m = re.fullmatch(r"/(?:shorts|live|embed)/([A-Za-z0-9_-]{11})/?", p.path)
+        pl = (q.get('list') or [''])[0].strip()
+        if pl and re.fullmatch(r'[A-Za-z0-9_-]{6,128}', pl):
+            return f'https://www.youtube.com/playlist?list={pl}', 'playlist'
+        if host == 'youtu.be':
+            vid = p.path.strip('/').split('/')[0]
+            if re.fullmatch(r'[A-Za-z0-9_-]{11}', vid):
+                return f'https://www.youtube.com/watch?v={vid}', 'video'
+        vid = (q.get('v') or [''])[0]
+        m = re.fullmatch(r'/(?:shorts|live|embed)/([A-Za-z0-9_-]{11})/?', p.path)
         if m:
-            return f"https://www.youtube.com/watch?v={m.group(1)}", "video"
-        if re.fullmatch(r"[A-Za-z0-9_-]{11}", vid):
-            return f"https://www.youtube.com/watch?v={vid}", "video"
-        if pl:
-            return f"https://www.youtube.com/playlist?list={pl}", "playlist"
+            return f'https://www.youtube.com/watch?v={m.group(1)}', 'video'
+        if re.fullmatch(r'[A-Za-z0-9_-]{11}', vid):
+            return f'https://www.youtube.com/watch?v={vid}', 'video'
     except (ValueError, TypeError):
         return None
     return None
+
+
+def safe_name(value: str, fallback: str = '이름없음') -> str:
+    """Windows 금지 문자/예약어를 제거한 디렉터리·파일 이름."""
+    value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', str(value or '')).strip(' .')
+    value = re.sub(r'\s+', ' ', value)[:110].rstrip(' .')
+    if not value or re.fullmatch(r'(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])', value):
+        return fallback
+    return value
+
+
+def playlist_destination(root: Path, job) -> Path | None:
+    playlist = str(job['playlist_title'] or job['playlist_override'] or '')
+    if not playlist:
+        return None
+    channel = str(job['channel_override'] or job['playlist_channel'] or '채널확인필요')
+    return root / safe_name(channel, '채널확인필요') / safe_name(playlist, '재생목록')
+
+
+def related_sidecars(media: Path) -> list[Path]:
+    """영상 이름과 동일한 기본 이름을 가진 자막·메타데이터 파일만 찾는다."""
+    suffixes = {'.srt', '.ass', '.vtt', '.lrc', '.json', '.description', '.jpg', '.jpeg', '.webp', '.png'}
+    if not media.is_file():
+        return []
+    try:
+        # 원래 다운로드명과 미세하게 다른 SRT도 동일 영상 ID이면 함께 처리한다.
+        exact = {p for p in media.parent.iterdir()
+                 if p.is_file() and p.name.startswith(media.stem + '.')
+                 and p.suffix.lower() in suffixes}
+        return sorted(exact.union(subtitle_candidates(media)))
+    except OSError:
+        return []
+
+
+def move_media_bundle(media: Path, destination: Path, new_stem: str | None = None) -> Path:
+    """영상 및 연관 자막, info.json 이동/이름변경. 목적지 덮어쓰기 금지."""
+    if not media.is_file():
+        raise FileNotFoundError(media)
+    target = destination / ((new_stem or media.stem) + media.suffix)
+    companions = related_sidecars(media)
+    pairs = [(media, target)]
+    alt = 0
+    for p in companions:
+        if p.name.startswith(media.stem + '.'):
+            name = (new_stem or media.stem) + p.name[len(media.stem):]
+        elif new_stem is None:
+            name = p.name  # 다른 이름의 동일 영상 ID 자막도 이동한다.
+        else:
+            alt += 1
+            name = f'{new_stem}.alt{alt}{p.suffix}'
+        pairs.append((p, destination / name))
+    for src, dst in pairs:
+        if src.resolve() != dst.resolve() and dst.exists():
+            raise FileExistsError(f'동일한 이름의 파일이 이미 존재합니다: {dst}')
+    destination.mkdir(parents=True, exist_ok=True)
+    for src, dst in pairs:
+        if src.resolve() != dst.resolve():
+            shutil.move(str(src), str(dst))
+    return target
+
+
+def subtitle_candidates(media: Path) -> list[Path]:
+    """동일 이름·동일 영상 ID·유사 제목의 한글 SRT 파일을 탐색한다."""
+    if not media.is_file():
+        return []
+    media_id = YT_ID_PATTERN.search(media.stem)
+    media_title = re.sub(r'\s*\[[A-Za-z0-9_-]{11}\].*$', '', media.stem).casefold()
+    result = []
+    for candidate in media.parent.glob('*.srt'):
+        name = candidate.name
+        sm = YT_ID_PATTERN.search(candidate.stem)
+        if candidate.stem.startswith(media.stem) or (media_id and sm and media_id.group(1) == sm.group(1)):
+            result.append(candidate)
+        elif not media_id and media_title and len(media_title) > 9:
+            other = candidate.stem.casefold()
+            common = os.path.commonprefix([media_title, other])
+            if len(common) >= 10 and len(common) / max(1, len(media_title)) >= 0.65:
+                result.append(candidate)
+    return sorted(set(result), key=lambda p: ('.ko.' not in p.name.lower(), p.name.lower()))
+
+
+def is_in_directory(path: Path, root: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
 
 
 def extract_video_id(url: str) -> str:
@@ -236,6 +366,7 @@ def local_video_record(path: Path) -> dict:
     elif not upload_date:
         match = re.search(r"(\d{4}-\d{2}-\d{2})$", path.stem)
         upload_date = match.group(1) if match else ""
+    # 목록 폴더가 있을 때 채널명은 info.json의 원본 채널을 우선 사용한다.
     return dict(video_id=str(file_id), title=str(title), channel=str(channel),
                 upload_date=upload_date, duration=int(info.get("duration") or 0),
                 file_path=str(path), source_url=str(info.get("webpage_url") or ""))
@@ -343,7 +474,7 @@ class DownloadWorker(QThread):
 
     def _shared_cmd(self):
         return [*self._cmd_base, "--ignore-config", "--js-runtimes", "deno",
-                "--remote-components", "ejs:npm", "--no-color",
+                "--remote-components", "ejs:npm", "--extractor-args", "youtube:lang=ko", "--no-color",
                 "--socket-timeout", "25", "--retries", "3",
                 "--fragment-retries", "3", "--extractor-retries", "2"]
 
@@ -373,75 +504,127 @@ class DownloadWorker(QThread):
         self.changed.emit()
 
     def _expand_playlist(self, db, job):
-        self.activity.emit("재생목록 확인 중")
+        self.activity.emit('재생목록 확인 중')
         self._emit(f"[재생목록] {job['url']}")
-        cmd = [*self._shared_cmd(), "--flat-playlist", "--dump-single-json", "--yes-playlist", job["url"]]
+        cmd = [*self._shared_cmd(), '--flat-playlist', '--dump-single-json', '--yes-playlist', job['url']]
         try:
             code, output, stderr = self._run_capture(cmd)
         except Exception as ex:
-            self._update_job(db, job["id"], "failed", str(ex))
-            self._emit(f"[재생목록 실패] {ex}")
+            self._update_job(db, job['id'], 'failed', str(ex))
+            self._emit(f'[재생목록 실패] {ex}')
             return
         if stderr.strip():
             for line in stderr.strip().splitlines()[-30:]:
-                self._emit("[yt-dlp] " + line)
+                self._emit('[yt-dlp] ' + line)
         if self._stop.is_set():
-            self._update_job(db, job["id"], "queued", "중단되어 재시도 대기")
+            self._update_job(db, job['id'], 'queued', '중단되어 재시도 대기')
             return
         if code != 0:
-            self._update_job(db, job["id"], "failed", stderr[-1500:] or "목록 정보 수신 실패")
+            self._update_job(db, job['id'], 'failed', stderr[-1500:] or '목록 정보 수신 실패')
             return
         try:
             data = json.loads(output)
-            entries = data.get("entries") or []
+            entries = data.get('entries') or []
             if not isinstance(entries, list):
-                raise ValueError("재생목록 데이터 형식이 올바르지 않습니다")
-            added = 0
-            skipped = 0
+                raise ValueError('재생목록 데이터 형식이 올바르지 않습니다')
+            plid = str(data.get('id') or parse_qs(urlparse(job['url']).query).get('list', [''])[0])
+            known_channel, known_title = KOREAN_PLAYLIST_OVERRIDES.get(plid, ('', ''))
+            ptitle = str(job['playlist_override'] or known_title or data.get('title')
+                         or data.get('playlist_title') or plid)
+            first = next((e for e in entries if isinstance(e, dict)), {})
+            owner = str(job['channel_override'] or known_channel or data.get('channel')
+                        or data.get('playlist_channel') or data.get('uploader')
+                        or data.get('playlist_uploader') or first.get('channel')
+                        or first.get('uploader') or '채널확인필요')
+            added = skipped = duplicates = 0
             with db:
-                for entry in entries:
+                for index, entry in enumerate(entries, 1):
                     if not isinstance(entry, dict):
                         skipped += 1
                         continue
-                    item_id = str(entry.get("id") or "")
-                    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", item_id):
-                        vurl = canonical_url(str(entry.get("webpage_url") or entry.get("url") or ""))
-                        item_id = extract_video_id(vurl[0]) if vurl and vurl[1] == "video" else ""
+                    item_id = str(entry.get('id') or '')
+                    if not re.fullmatch(r'[A-Za-z0-9_-]{11}', item_id):
+                        raw_url = str(entry.get('webpage_url') or entry.get('url') or '')
+                        m = re.search(r'(?:[?&]v=|youtu\.be/)([A-Za-z0-9_-]{11})', raw_url)
+                        item_id = m.group(1) if m else ''
                     if not item_id:
                         skipped += 1
                         continue
-                    url = f"https://www.youtube.com/watch?v={item_id}"
+                    # 기존 DB의 url UNIQUE를 유지하면서, 같은 영상의 서로 다른 재생목록은 구별한다.
+                    url = f'https://www.youtube.com/watch?v={item_id}&mv_list={plid}'
                     before = db.total_changes
-                    db.execute("INSERT OR IGNORE INTO jobs(url,kind,title,status,created_at,updated_at) "
-                               "VALUES(?,'video',?,'queued',?,?)",
-                               (url, str(entry.get("title") or item_id), now_str(), now_str()))
-                    added += db.total_changes - before
-            self._update_job(db, job["id"], "expanded", f"신규 {added}개 / 접근 불가 {skipped}개", 100)
-            self._emit(f"[재생목록 등록] 제목: {data.get('title','')}, 신규 {added}개, 건너뜀 {skipped}개")
-        except (ValueError, json.JSONDecodeError) as ex:
-            self._update_job(db, job["id"], "failed", f"재생목록 JSON 분석 오류: {ex}")
+                    db.execute("""INSERT OR IGNORE INTO jobs
+                        (url,kind,title,status,created_at,updated_at,playlist_id,playlist_title,
+                         playlist_channel,playlist_index,channel_override,playlist_override)
+                        VALUES(?,'video',?,'queued',?,?,?,?,?,?,?,?)""",
+                        (url, str(entry.get('title') or item_id), now_str(), now_str(),
+                         plid, ptitle, owner, int(entry.get('playlist_index') or index),
+                         str(job['channel_override'] or ''), str(job['playlist_override'] or '')))
+                    if db.total_changes > before:
+                        added += 1
+                    else:
+                        duplicates += 1
+                db.execute('UPDATE jobs SET title=?,updated_at=? WHERE id=?',
+                           (f'{owner} / {ptitle}', now_str(), job['id']))
+            self._update_job(db, job['id'], 'expanded',
+                             f'신규 {added}개 / 중복 {duplicates}개 / 접근 불가 {skipped}개', 100)
+            self._emit(f'[재생목록 등록] 채널: {owner}, 제목: {ptitle}, 신규 {added}개, 중복 {duplicates}개, 건너뜀 {skipped}개')
+            self._emit(f'[저장 폴더] {self.root / safe_name(owner) / safe_name(ptitle)}')
+        except (ValueError, TypeError, json.JSONDecodeError) as ex:
+            self._update_job(db, job['id'], 'failed', f'재생목록 JSON 분석 오류: {ex}')
 
     def _download_one(self, db, job):
-        url = job["url"]
+        url = job['url']
         video_id = extract_video_id(url)
+        dest = playlist_destination(self.root, job)
+        if dest is None and job['channel_override']:
+            dest = self.root / safe_name(job['channel_override'])
+        # yt-dlp 호출에는 내부 구별자 mv_list를 제거한 순수 영상 주소를 전달한다.
+        video_url = f'https://www.youtube.com/watch?v={video_id}' if video_id else url
         if video_id:
             existing = db.execute("SELECT file_path FROM videos WHERE video_id=?", (video_id,)).fetchone()
-            if existing and Path(existing["file_path"]).is_file():
-                self._update_job(db, job["id"], "done", "이미 라이브러리에 존재", 100)
-                self._emit(f"[중복 생략] {url}")
+            if existing and Path(existing['file_path']).is_file():
+                old_path = Path(existing['file_path'])
+                if dest and old_path.parent.resolve() != dest.resolve():
+                    # V1.0의 채널명\파일처럼 최상위 채널 폴더에 저장된 구형 파일은
+                    # 재다운로드하지 않고 재생목록 폴더에 안전하게 이동한다.
+                    try:
+                        rel = old_path.resolve().relative_to(self.root.resolve())
+                        if len(rel.parts) == 2 and job['playlist_title']:
+                            moved = move_media_bundle(old_path, dest)
+                            with db:
+                                db.execute('UPDATE videos SET file_path=?,updated_at=? WHERE video_id=?',
+                                           (str(moved), now_str(), video_id))
+                            self._emit(f'[기존 영상 재분류] {old_path} -> {moved} (메모·자막 유지)')
+                        else:
+                            self._emit(f'[중복 생략] 기존 영상이 다른 폴더에 있습니다: {old_path}; '
+                                       f'목적지: {dest} / 라이브러리의 파일 이동 버튼으로 이동 가능')
+                    except (OSError, ValueError) as ex:
+                        self._emit(f'[기존 영상 재분류 보류] {ex}; 파일 이동 버튼으로 처리하세요')
+                else:
+                    self._emit(f'[중복 생략] {url}')
+                self._update_job(db, job['id'], 'done', '이미 라이브러리에 존재', 100)
                 return
         self.activity.emit(f"다운로드 중: {job['title'] or url}")
         self._emit(f"[다운로드 시작] #{job['id']} {url}")
+        # 재생목록은 yt-dlp가 임의로 영어 채널명을 출력하더라도 확인한
+        # 채널 폴더명(사용자 지정/한글 매핑/한국어 메타데이터)을 파일명 접두사로 쓴다.
+        file_template = OUTPUT_TEMPLATE
+        if dest:
+            korean_channel = safe_name(job['channel_override'] or job['playlist_channel'] or dest.name)
+            file_template = (korean_channel.replace('%', '%%')
+                             + ' - %(title)s [%(id)s] - %(upload_date>%Y-%m-%d)s.%(ext)s')
         cmd = [*self._shared_cmd(), "--no-playlist", "--continue", "--newline", "--progress",
                "-f", FORMAT_SELECTOR, "--merge-output-format", "mp4",
                "--write-subs", "--write-auto-subs", "--sub-langs", "ko.*",
                "--convert-subs", "srt", "--write-info-json", "--no-write-playlist-metafiles",
-               "-P", str(self.root), "-o", OUTPUT_TEMPLATE,
+               "-P", str(dest if dest else self.root),
+               "-o", file_template,
                "--print", "after_move:__MINTON_FILE__%(filepath)s",
                "--print", "after_move:__MINTON_TITLE__%(title)s",
                "--print", "after_move:__MINTON_CHANNEL__%(channel)s",
                "--print", "after_move:__MINTON_ID__%(id)s",
-               url]
+               video_url]
         info: dict[str, str] = {}
         last_log_percentage = -10
         last_persisted_step = -1
@@ -503,11 +686,15 @@ class DownloadWorker(QThread):
                 self._update_job(db, job["id"], "failed", "성공 응답이지만 저장된 동영상 파일을 찾지 못함")
                 return
             data = local_video_record(media_path)
-            data["source_url"] = url
+            data['source_url'] = video_url
             if info.get("TITLE"):
                 data["title"] = info["TITLE"]
-            if info.get("CHANNEL"):
-                data["channel"] = info["CHANNEL"]
+            if info.get('CHANNEL'):
+                data['channel'] = info['CHANNEL']
+            if job['playlist_channel']:
+                data['channel'] = job['playlist_channel']
+            if job['channel_override']:
+                data['channel'] = job['channel_override']
             if info.get("ID"):
                 data["video_id"] = info["ID"]
             upsert_video(db, data)
@@ -601,11 +788,22 @@ class MainWindow(QMainWindow):
         self.current_subtitle_index = -1
         self._loading_note = False
         self._seeking = False
+        self._pending_seek: int | None = None
+        self.subtitle_window: QDialog | None = None
+        self.subtitle_popup_list: QListWidget | None = None
+        self._last_missing: set[str] = set()
         self._build_ui()
         self._load_settings()
         self.refresh_jobs()
         self.refresh_library()
         QTimer.singleShot(500, self.scan_library)
+        # 실파일 삭제 즉시(최대 15초) 라이브러리에서 숨김; 폴더 이동은 자동 재검색.
+        self.check_timer = QTimer(self)
+        self.check_timer.timeout.connect(self.refresh_library)
+        self.check_timer.start(15000)
+        self.auto_scan_timer = QTimer(self)
+        self.auto_scan_timer.timeout.connect(lambda: self.scan_library(auto=True))
+        self.auto_scan_timer.start(60000)
         self.add_log(f"프로그램 시작 | DB: {DB_PATH} | 로그: {LOG_PATH}")
         self.setWindowTitle(APP_TITLE)
         try:
@@ -653,7 +851,19 @@ class MainWindow(QMainWindow):
         self.add_btn.setMinimumHeight(60)
         self.add_btn.clicked.connect(self.add_urls)
         ar.addWidget(self.add_btn)
+        overrides_row = QHBoxLayout()
+        overrides_row.addWidget(QLabel('채널 폴더명(선택)'))
+        self.channel_override_input = QLineEdit()
+        self.channel_override_input.setPlaceholderText('비워두면 YouTube 한국어 채널명 사용 / 예: 윤이콕TV')
+        overrides_row.addWidget(self.channel_override_input, 1)
+        overrides_row.addWidget(QLabel('재생목록 폴더명(선택)'))
+        self.playlist_override_input = QLineEdit()
+        self.playlist_override_input.setPlaceholderText('예: 물A조라고 놀리지 말아요')
+        overrides_row.addWidget(self.playlist_override_input, 1)
         layout.addWidget(add_box)
+        options_widget = QWidget()
+        options_widget.setLayout(overrides_row)
+        layout.addWidget(options_widget)
 
         queue_bar = QHBoxLayout()
         self.start_btn = QPushButton("▶ 다운로드 시작 / 재개")
@@ -675,6 +885,14 @@ class MainWindow(QMainWindow):
         self.activity_label = QLabel("대기")
         queue_bar.addWidget(self.activity_label)
         layout.addLayout(queue_bar)
+        progress_row = QHBoxLayout()
+        progress_row.addWidget(QLabel('현재 영상 진행률'))
+        self.current_progress = QProgressBar()
+        self.current_progress.setRange(0, 1000)
+        self.current_progress.setValue(0)
+        self.current_progress.setFormat('%p%')
+        progress_row.addWidget(self.current_progress, 1)
+        layout.addLayout(progress_row)
 
         self.jobs_table = QTableWidget(0, 5)
         self.jobs_table.setHorizontalHeaderLabels(["번호", "상태", "진행률", "영상/재생목록", "오류/메시지"])
@@ -682,8 +900,11 @@ class MainWindow(QMainWindow):
         self.jobs_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.jobs_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.jobs_table.verticalHeader().setVisible(False)
-        self.jobs_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.jobs_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.jobs_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.jobs_table.horizontalHeader().setStretchLastSection(False)
+        self.jobs_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.jobs_table.setColumnWidth(3, 370)
+        self.jobs_table.setColumnWidth(4, 280)
         self.jobs_table.setColumnWidth(0, 55)
         self.jobs_table.setColumnWidth(1, 100)
         self.jobs_table.setColumnWidth(2, 85)
@@ -703,18 +924,34 @@ class MainWindow(QMainWindow):
         self.channel_combo.setMinimumWidth(140)
         self.channel_combo.currentIndexChanged.connect(self.refresh_library)
         lib_bar.addWidget(self.channel_combo)
-        scan_btn = QPushButton("폴더 다시 검색")
-        scan_btn.clicked.connect(self.scan_library)
+        scan_btn = QPushButton('폴더 다시 검색')
+        scan_btn.clicked.connect(lambda: self.scan_library(auto=False))
         lib_bar.addWidget(scan_btn)
         ll.addLayout(lib_bar)
+        manage_bar = QHBoxLayout()
+        self.show_missing = QCheckBox('누락 영상도 표시')
+        self.show_missing.toggled.connect(self.refresh_library)
+        manage_bar.addWidget(self.show_missing)
+        for label, callback in (('파일 이동', self.move_current_media),
+                                ('한글 제목/파일명 변경', self.rename_current_media),
+                                ('영상 휴지통 삭제', self.trash_current_media)):
+            button = QPushButton(label)
+            button.clicked.connect(callback)
+            manage_bar.addWidget(button)
+        manage_bar.addStretch()
+        ll.addLayout(manage_bar)
         self.library_table = QTableWidget(0, 5)
         self.library_table.setHorizontalHeaderLabels(["제목", "채널", "업로드일", "메모", "파일"])
         self.library_table.verticalHeader().setVisible(False)
         self.library_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.library_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.library_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.library_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.library_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        # 모든 열을 드래그로 조절 가능하게 하고 열 너비는 종료시 저장한다.
+        self.library_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.library_table.horizontalHeader().setStretchLastSection(False)
+        self.library_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.library_table.setColumnWidth(0, 310)
+        self.library_table.setColumnWidth(4, 115)
         self.library_table.setColumnWidth(1, 115)
         self.library_table.setColumnWidth(2, 95)
         self.library_table.setColumnWidth(3, 50)
@@ -740,6 +977,8 @@ class MainWindow(QMainWindow):
         self.player.positionChanged.connect(self.on_position)
         self.player.durationChanged.connect(self.on_duration)
         self.player.errorOccurred.connect(self.on_player_error)
+        self.player.mediaStatusChanged.connect(self.on_media_status)
+        self.player.seekableChanged.connect(lambda _ok: self._apply_pending_seek())
         self.subtitle_now = QLabel("")
         self.subtitle_now.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.subtitle_now.setWordWrap(True)
@@ -793,8 +1032,21 @@ class MainWindow(QMainWindow):
         self.subtitle_combo = QComboBox()
         self.subtitle_combo.currentIndexChanged.connect(self.load_selected_subtitles)
         sl.addWidget(self.subtitle_combo)
-        sl.addWidget(QLabel("자막을 더블클릭하면 해당 구간으로 이동합니다."))
+        sub_tools = QHBoxLayout()
+        sub_tools.addWidget(QLabel('자막 줄 더블클릭 = 해당 구간 재생'))
+        self.subtitle_count_label = QLabel('자막 0개')
+        sub_tools.addWidget(self.subtitle_count_label)
+        sub_tools.addStretch()
+        self.subtitle_search = QLineEdit()
+        self.subtitle_search.setPlaceholderText('자막 검색')
+        self.subtitle_search.textChanged.connect(self.filter_subtitles)
+        sub_tools.addWidget(self.subtitle_search)
+        popup_btn = QPushButton('전체 자막 큰창')
+        popup_btn.clicked.connect(self.show_full_subtitles)
+        sub_tools.addWidget(popup_btn)
+        sl.addLayout(sub_tools)
         self.subtitle_list = QListWidget()
+        self.subtitle_list.setWordWrap(True)
         self.subtitle_list.itemDoubleClicked.connect(self.subtitle_jump)
         sl.addWidget(self.subtitle_list)
         tabs.addTab(sub_tab, "전체 자막 / 구간 이동")
@@ -829,6 +1081,15 @@ class MainWindow(QMainWindow):
                 self.inner_splitter.setSizes(sizes)
         except (ValueError, TypeError):
             pass
+        for table, key in ((self.library_table, 'library_col_widths'),
+                           (self.jobs_table, 'jobs_col_widths')):
+            try:
+                sizes = json.loads(get_setting(self.db, key, '[]'))
+                if len(sizes) == table.columnCount():
+                    for i, n in enumerate(sizes):
+                        table.setColumnWidth(i, max(45, min(2000, int(n))))
+            except (ValueError, TypeError):
+                pass
 
     def save_settings(self):
         if not hasattr(self, "db"):
@@ -851,6 +1112,8 @@ class MainWindow(QMainWindow):
     def add_urls(self):
         candidates = re.findall(r"https?://[^\s<>\"']+", self.url_edit.toPlainText())
         added, duplicate, invalid = 0, 0, 0
+        channel_override = safe_name(self.channel_override_input.text(), '')
+        playlist_override = safe_name(self.playlist_override_input.text(), '')
         with self.db:
             for candidate in candidates:
                 parsed = canonical_url(candidate.rstrip("),;"))
@@ -859,14 +1122,17 @@ class MainWindow(QMainWindow):
                     continue
                 url, kind = parsed
                 before = self.db.total_changes
-                self.db.execute("INSERT OR IGNORE INTO jobs(url,kind,title,status,created_at,updated_at) "
-                                "VALUES(?,?,?,?,?,?)", (url, kind, url, "queued", now_str(), now_str()))
+                self.db.execute('INSERT OR IGNORE INTO jobs(url,kind,title,status,created_at,updated_at,channel_override,playlist_override) '
+                                'VALUES(?,?,?,?,?,?,?,?)',
+                                (url, kind, url, 'queued', now_str(), now_str(), channel_override, playlist_override))
                 if self.db.total_changes > before:
                     added += 1
                 else:
                     duplicate += 1
         self.refresh_jobs()
-        self.add_log(f"주소 등록: 신규 {added}, 중복 {duplicate}, 잘못된 주소 {invalid}")
+        self.add_log(f'주소 등록: 신규 {added}, 중복 {duplicate}, 잘못된 주소 {invalid}')
+        if channel_override or playlist_override:
+            self.add_log(f'[이름 지정] 채널: {channel_override or "자동"} / 목록: {playlist_override or "자동"}')
         if not candidates:
             QMessageBox.warning(self, "주소 확인", "YouTube 영상 또는 재생목록 주소를 붙여 넣으세요.")
         elif added:
@@ -907,34 +1173,50 @@ class MainWindow(QMainWindow):
         self.refresh_jobs()
 
     def refresh_jobs(self):
-        if not hasattr(self, "jobs_table"):
+        if not hasattr(self, 'jobs_table'):
             return
         selected = set(self.selected_job_ids())
-        rows = self.db.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT 1000").fetchall()
+        rows = self.db.execute('SELECT * FROM jobs ORDER BY id DESC LIMIT 1000').fetchall()
         table = self.jobs_table
         table.blockSignals(True)
         table.setRowCount(len(rows))
-        status_text = {"queued": "대기", "running": "다운로드 중", "done": "완료", "failed": "실패", "expanded": "목록 등록"}
+        status_text = {'queued': '대기', 'running': '다운로드 중', 'done': '완료',
+                       'failed': '실패', 'expanded': '목록 등록'}
+        active = None
         for i, job in enumerate(rows):
-            vals = [str(job["id"]), status_text.get(job["status"], job["status"]),
-                    f"{job['progress']:.0f}%", job["title"] or job["url"], job["error"]]
+            vals = [str(job['id']), status_text.get(job['status'], job['status']),
+                    '', job['title'] or job['url'], job['error']]
+            if job['playlist_title'] and job['kind'] == 'video':
+                vals[3] = f"[{job['playlist_channel']} / {job['playlist_title']}] {vals[3]}"
             for col, val in enumerate(vals):
                 it = QTableWidgetItem(str(val))
-                if col == 3:
-                    it.setToolTip(job["url"])
+                it.setToolTip(str(val) if col != 3 else f"{vals[3]}\n{job['url']}")
                 table.setItem(i, col, it)
-            if job["id"] in selected:
+            bar = QProgressBar(table)
+            bar.setRange(0, 1000)
+            bar.setValue(int(float(job['progress']) * 10))
+            bar.setFormat(f"{float(job['progress']):.1f}%")
+            table.setCellWidget(i, 2, bar)
+            if job['status'] == 'running':
+                active = job
+            if job['id'] in selected:
                 table.selectRow(i)
         table.blockSignals(False)
+        if active is not None:
+            self.current_progress.setValue(int(float(active['progress']) * 10))
+            self.current_progress.setFormat(f"{float(active['progress']):.1f}%")
 
     def on_worker_progress(self, job_id, progress):
-        # 진행률 갱신마다 전체 대기열 테이블을 다시 구성하지 않는다.
+        # 기존 동작처럼 테이블 전체 재구성 없이 진행률만 업데이트한다.
+        self.current_progress.setValue(int(max(0, min(100, progress)) * 10))
+        self.current_progress.setFormat(f'{progress:.1f}%')
         for row in range(self.jobs_table.rowCount()):
             item = self.jobs_table.item(row, 0)
             if item and item.text() == str(job_id):
-                value = self.jobs_table.item(row, 2)
-                if value:
-                    value.setText(f"{progress:.1f}%")
+                bar = self.jobs_table.cellWidget(row, 2)
+                if isinstance(bar, QProgressBar):
+                    bar.setValue(int(progress * 10))
+                    bar.setFormat(f'{progress:.1f}%')
                 break
 
     def start_download(self):
@@ -999,7 +1281,9 @@ class MainWindow(QMainWindow):
         self.refresh_library()
         self.add_log("다운로드 작업자 종료")
 
-    def scan_library(self):
+    def scan_library(self, auto=False):
+        if auto and self.worker and self.worker.isRunning():
+            return
         if self.scanner and self.scanner.isRunning():
             return
         root = self.root_input.text().strip()
@@ -1007,62 +1291,91 @@ class MainWindow(QMainWindow):
             return
         self.scanner = ScanWorker(root, self)
         self.scanner.message.connect(self.add_log)
-        self.scanner.finished_scan.connect(self.on_scan_finished)
+        self.scanner.finished_scan.connect(lambda records: self.on_scan_finished(records, auto))
         self.scanner.start()
         self.statusBar().showMessage("다운로드 폴더의 기존 영상을 검색 중...")
 
-    def on_scan_finished(self, records):
+    def on_scan_finished(self, records, auto=False):
+        moved = 0
         for record in records:
+            old = self.db.execute('SELECT file_path FROM videos WHERE video_id=?', (record['video_id'],)).fetchone()
+            if old and old['file_path'] != record['file_path']:
+                moved += 1
             try:
                 upsert_video(self.db, record)
+                if (record['video_id'] == self.current_id and self.current_path is not None
+                        and str(self.current_path) != record['file_path']):
+                    self.current_path = Path(record['file_path'])
+                    self.player.stop()
+                    self.player.setSource(QUrl.fromLocalFile(record['file_path']))
+                    self.find_subtitle_files()
+                    self.add_log(f'[현재 영상 경로 연결] {record["file_path"]}')
             except (sqlite3.Error, OSError) as ex:
                 self.add_log(f"[색인 오류] {record.get('file_path','')}: {ex}")
         self.statusBar().showMessage(f"폴더 검색 완료: {len(records)}개 영상 확인")
-        self.add_log(f"[라이브러리 검색] 영상 {len(records)}개 확인, 기존 메모 유지")
+        if not auto or moved:
+            self.add_log(f'[라이브러리 검색] 영상 {len(records)}개 확인, 기존 메모 유지; 이동 감지 {moved}개')
         self.refresh_library()
 
     def refresh_library(self):
-        if not hasattr(self, "library_table"):
+        if not hasattr(self, 'library_table'):
             return
         current_channel = self.channel_combo.currentText()
-        all_channels = [r[0] for r in self.db.execute("SELECT DISTINCT channel FROM videos ORDER BY channel")]
+        all_channels = [r[0] for r in self.db.execute('SELECT DISTINCT channel FROM videos ORDER BY channel')]
         if self.channel_combo.count() != len(all_channels) + 1 or [self.channel_combo.itemText(i) for i in range(1, self.channel_combo.count())] != all_channels:
             self.channel_combo.blockSignals(True)
             self.channel_combo.clear()
-            self.channel_combo.addItem("전체 채널")
+            self.channel_combo.addItem('전체 채널')
             self.channel_combo.addItems(all_channels)
             index = self.channel_combo.findText(current_channel)
             self.channel_combo.setCurrentIndex(index if index >= 0 else 0)
             self.channel_combo.blockSignals(False)
-        text = f"%{self.search_input.text().strip()}%"
+        text = f'%{self.search_input.text().strip()}%'
         channel = self.channel_combo.currentText()
-        filters = "WHERE (title LIKE ? OR channel LIKE ? OR memo LIKE ? OR video_id LIKE ?)"
-        params = [text] * 4
-        if channel != "전체 채널":
-            filters += " AND channel=?"
+        filters = 'WHERE (title LIKE ? OR title_override LIKE ? OR channel LIKE ? OR memo LIKE ? OR video_id LIKE ?)'
+        params = [text] * 5
+        if channel != '전체 채널':
+            filters += ' AND channel=?'
             params.append(channel)
-        rows = self.db.execute(f"SELECT video_id,title,channel,upload_date,memo,file_path FROM videos {filters} ORDER BY upload_date DESC,title LIMIT 10000", params).fetchall()
+        rows = self.db.execute(f"""SELECT video_id,title,title_override,channel,upload_date,memo,file_path
+            FROM videos {filters} ORDER BY upload_date DESC,title LIMIT 10000""", params).fetchall()
         table = self.library_table
         table.blockSignals(True)
-        table.setRowCount(len(rows))
+        visible = []
+        missing = set()
+        root = Path(self.root_input.text().strip())
+        for rec in rows:
+            path = Path(rec['file_path'])
+            present = path.is_file() and is_in_directory(path, root)
+            if not present:
+                missing.add(rec['video_id'])
+                if not self.show_missing.isChecked():
+                    continue
+            visible.append((rec, present))
+        table.setRowCount(len(visible))
         selected_row = -1
-        for row_idx, rec in enumerate(rows):
-            present = Path(rec["file_path"]).is_file()
-            values = [rec["title"], rec["channel"], rec["upload_date"],
-                      "●" if rec["memo"] else "", "있음" if present else "파일 없음"]
+        for row_idx, (rec, present) in enumerate(visible):
+            title = rec['title_override'] or rec['title']
+            values = [title, rec['channel'], rec['upload_date'],
+                      '●' if rec['memo'] else '', '있음' if present else '파일 없음']
             for col, val in enumerate(values):
                 item = QTableWidgetItem(val)
                 if col == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, rec["video_id"])
-                if col == 4:
-                    item.setToolTip(rec["file_path"])
+                    item.setData(Qt.ItemDataRole.UserRole, rec['video_id'])
+                item.setToolTip(rec['file_path'] if col == 4 else str(val))
                 table.setItem(row_idx, col, item)
-            if rec["video_id"] == self.current_id:
+            if rec['video_id'] == self.current_id:
                 selected_row = row_idx
         if selected_row >= 0:
             table.selectRow(selected_row)
         table.blockSignals(False)
-        self.statusBar().showMessage(f"라이브러리 {len(rows)}개 표시 | DB/로그는 {APP_DATA}에 보관")
+        if missing != self._last_missing:
+            if missing:
+                self.add_log(f'[누락 파일] {len(missing)}개: 기본 라이브러리 보기에서 숨김(메모 DB 보존)')
+            elif self._last_missing:
+                self.add_log('[파일 복구] 누락 영상이 다시 확인되었습니다')
+            self._last_missing = missing
+        self.statusBar().showMessage(f'라이브러리 {len(visible)}개 표시 / 누락 {len(missing)}개 | DB/로그: {APP_DATA}')
 
     def on_video_selected(self):
         selected = self.library_table.selectedItems()
@@ -1072,19 +1385,22 @@ class MainWindow(QMainWindow):
         if not key_item:
             return
         video_id = key_item.data(Qt.ItemDataRole.UserRole)
-        if not video_id or video_id == self.current_id:
+        if not video_id:
             return
-        self.save_memo(silent=True)
         row = self.db.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
         if row is None:
             return
+        if video_id == self.current_id and self.current_path == Path(row['file_path']):
+            return
+        self.save_memo(silent=True)
         self.current_id = video_id
         self.current_path = Path(row["file_path"])
-        self.video_info_label.setText(f"{row['channel']} · {row['title']}")
+        self.video_info_label.setText(f"{row['channel']} · {row['title_override'] or row['title']}")
         self._loading_note = True
         self.memo_edit.setPlainText(row["memo"])
         self._loading_note = False
         self.player.stop()
+        self._pending_seek = None
         self.subtitle_now.clear()
         if self.current_path.is_file():
             self.player.setSource(QUrl.fromLocalFile(str(self.current_path)))
@@ -1092,7 +1408,6 @@ class MainWindow(QMainWindow):
             self.player.setSource(QUrl())
             self.video_info_label.setText("파일이 존재하지 않습니다: " + str(self.current_path))
         self.find_subtitle_files()
-        self.refresh_library()
 
     def save_memo(self, silent=False):
         if not self.current_id or self._loading_note:
@@ -1144,11 +1459,10 @@ class MainWindow(QMainWindow):
         self.subtitle_combo.clear()
         if self.current_path and self.current_path.is_file():
             try:
-                files = sorted(self.current_path.parent.glob(self.current_path.stem + "*.srt"))
-                for file in files:
+                for file in subtitle_candidates(self.current_path):
                     self.subtitle_combo.addItem(file.name, str(file))
-            except OSError:
-                pass
+            except OSError as ex:
+                self.add_log(f'[SRT 탐색 오류] {ex}')
         self.subtitle_combo.blockSignals(False)
         self.load_selected_subtitles()
 
@@ -1159,20 +1473,199 @@ class MainWindow(QMainWindow):
         self.subtitle_list.clear()
         self.subtitle_now.clear()
         path = self.subtitle_combo.currentData()
-        if not path:
-            return
-        self.subtitles = parse_srt(Path(path))
-        self.subtitle_starts = [item[0] for item in self.subtitles]
-        self.subtitle_list.addItems([f"{millis_text(start)}  {txt.replace(chr(10), ' / ')}"
-                                     for start, end, txt in self.subtitles])
-        self.add_log(f"[SRT 자막] {Path(path).name} ({len(self.subtitles)}개 구간)")
+        if path:
+            self.subtitles = parse_srt(Path(path))
+            self.subtitle_starts = [item[0] for item in self.subtitles]
+            for start, end, txt in self.subtitles:
+                item = QListWidgetItem(f"{millis_text(start)}  {txt.replace(chr(10), ' / ')}")
+                item.setData(Qt.ItemDataRole.UserRole, start)
+                item.setToolTip(f"{millis_text(start)} ~ {millis_text(end)}\n{txt}")
+                self.subtitle_list.addItem(item)
+            self.add_log(f'[SRT 자막] {Path(path).name} ({len(self.subtitles)}개 구간)')
+        else:
+            if self.current_path:
+                self.add_log(f'[SRT 자막] 대응되는 자막 없음: {self.current_path.name}')
+        self.subtitle_count_label.setText(f'자막 {len(self.subtitles)}개')
+        self.filter_subtitles(self.subtitle_search.text())
+        self.refresh_subtitle_popup()
+
+    def filter_subtitles(self, term):
+        t = str(term).strip().casefold()
+        for i in range(self.subtitle_list.count()):
+            item = self.subtitle_list.item(i)
+            item.setHidden(t not in item.text().casefold())
 
     def subtitle_jump(self, item):
-        pos = self.subtitle_list.row(item)
-        if 0 <= pos < len(self.subtitles):
-            self.player.setPosition(self.subtitles[pos][0])
+        target = item.data(Qt.ItemDataRole.UserRole)
+        if target is None:
+            pos = self.subtitle_list.row(item)
+            if 0 <= pos < len(self.subtitles):
+                target = self.subtitles[pos][0]
+        if target is not None and self.current_path and self.current_path.is_file():
+            self._pending_seek = int(target)
+            self.player.play()
+            self._apply_pending_seek()
+            self.add_log(f'[자막 이동] {millis_text(int(target))} → 재생')
+
+    def _apply_pending_seek(self):
+        if self._pending_seek is None:
+            return
+        status = self.player.mediaStatus()
+        if self.player.isSeekable() and status in (QMediaPlayer.MediaStatus.LoadedMedia,
+                      QMediaPlayer.MediaStatus.BufferedMedia,
+                      QMediaPlayer.MediaStatus.BufferingMedia):
+            target = self._pending_seek
+            self.player.setPosition(target)
+            self._pending_seek = None
             if self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
                 self.player.play()
+
+    def on_media_status(self, status):
+        if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia,
+                      QMediaPlayer.MediaStatus.BufferingMedia):
+            if self._pending_seek is not None:
+                QTimer.singleShot(50, self._apply_pending_seek)
+        if status == QMediaPlayer.MediaStatus.InvalidMedia and self._pending_seek is not None:
+            self.add_log('[자막 이동 오류] 미디어 재생 준비 실패')
+            self._pending_seek = None
+
+    def show_full_subtitles(self):
+        if self.subtitle_window is None:
+            popup = QDialog(self)
+            popup.setWindowTitle('Minton Video Library - 전체 자막 / 구간 탐색')
+            popup.resize(850, 720)
+            v = QVBoxLayout(popup)
+            v.addWidget(QLabel('전체 자막 (더블클릭하면 메인 플레이어가 해당 시각부터 재생됩니다)'))
+            search = QLineEdit()
+            search.setPlaceholderText('자막 내용 검색')
+            v.addWidget(search)
+            lst = QListWidget()
+            lst.setWordWrap(True)
+            lst.itemDoubleClicked.connect(self.subtitle_jump)
+            search.textChanged.connect(lambda term: [lst.item(i).setHidden(
+                str(term).casefold() not in lst.item(i).text().casefold()) for i in range(lst.count())])
+            v.addWidget(lst)
+            self.subtitle_window = popup
+            self.subtitle_popup_list = lst
+        self.refresh_subtitle_popup()
+        self.subtitle_window.show()
+        self.subtitle_window.raise_()
+        self.subtitle_window.activateWindow()
+
+    def refresh_subtitle_popup(self):
+        lst = self.subtitle_popup_list
+        if lst is None:
+            return
+        lst.clear()
+        for start, end, text in self.subtitles:
+            item = QListWidgetItem(f"{millis_text(start)}  {text.replace(chr(10), ' / ')}")
+            item.setData(Qt.ItemDataRole.UserRole, start)
+            item.setToolTip(f'{millis_text(start)} ~ {millis_text(end)}\n{text}')
+            lst.addItem(item)
+
+    def current_video_record(self):
+        if not self.current_id:
+            QMessageBox.information(self, '영상 선택', '라이브러리에서 영상을 선택하세요.')
+            return None
+        row = self.db.execute('SELECT * FROM videos WHERE video_id=?', (self.current_id,)).fetchone()
+        if not row:
+            return None
+        return row
+
+    def move_current_media(self):
+        record = self.current_video_record()
+        if not record:
+            return
+        path = Path(record['file_path'])
+        if not path.is_file():
+            QMessageBox.warning(self, '파일 없음', '파일이 없습니다. 폴더 다시 검색으로 복구하세요.')
+            return
+        destination = QFileDialog.getExistingDirectory(self, '옮길 폴더 지정', str(path.parent))
+        if not destination:
+            return
+        if not is_in_directory(Path(destination), Path(self.root_input.text().strip())):
+            QMessageBox.warning(self, '라이브러리 범위 밖',
+                                '영상 이동은 현재 다운로드 루트 아래 폴더만 가능합니다.\n'
+                                '다른 드라이브로 옮기려면 먼저 저장 폴더를 변경해 주세요.')
+            return
+        self.save_memo(silent=True)
+        self.player.stop()
+        try:
+            result = move_media_bundle(path, Path(destination))
+            with self.db:
+                self.db.execute('UPDATE videos SET file_path=?,updated_at=? WHERE video_id=?',
+                                (str(result), now_str(), record['video_id']))
+            self.current_path = result
+            self.player.setSource(QUrl.fromLocalFile(str(result)))
+            self.find_subtitle_files()
+            self.add_log(f'[영상 이동] {path} -> {result} (연관 SRT/info.json 동반 이동)')
+            self.refresh_library()
+        except (OSError, ValueError) as ex:
+            self.add_log(f'[영상 이동 오류] {ex}')
+            QMessageBox.warning(self, '영상 이동 실패', str(ex))
+
+    def rename_current_media(self):
+        record = self.current_video_record()
+        if not record:
+            return
+        path = Path(record['file_path'])
+        if not path.is_file():
+            QMessageBox.warning(self, '파일 없음', '파일이 없습니다. 폴더 다시 검색으로 복구하세요.')
+            return
+        title, ok = QInputDialog.getText(self, '한글 제목 / 파일명 변경',
+                                         '변경할 한국어 영상 제목을 입력하세요 (영상/자막/메타데이터 동시 변경).',
+                                         text=record['title_override'] or record['title'])
+        if not ok or not title.strip():
+            return
+        clean_title = safe_name(title, '제목없음')
+        parts = [safe_name(record['channel']), clean_title]
+        stem = ' - '.join(parts)
+        if re.fullmatch(r'[A-Za-z0-9_-]{11}', record['video_id']):
+            stem += f" [{record['video_id']}]"
+        if record['upload_date']:
+            stem += ' - ' + safe_name(record['upload_date'])
+        self.save_memo(silent=True)
+        self.player.stop()
+        try:
+            result = move_media_bundle(path, path.parent, stem)
+            with self.db:
+                self.db.execute('UPDATE videos SET title_override=?,file_path=?,updated_at=? WHERE video_id=?',
+                                (clean_title, str(result), now_str(), record['video_id']))
+            self.current_path = result
+            self.player.setSource(QUrl.fromLocalFile(str(result)))
+            self.find_subtitle_files()
+            self.video_info_label.setText(f"{record['channel']} · {clean_title}")
+            self.add_log(f'[한글 제목 변경] {path.name} -> {result.name} (메모 유지)')
+            self.refresh_library()
+        except (OSError, ValueError) as ex:
+            self.add_log(f'[제목 변경 오류] {ex}')
+            QMessageBox.warning(self, '이름 변경 실패', str(ex))
+
+    def trash_current_media(self):
+        record = self.current_video_record()
+        if not record:
+            return
+        path = Path(record['file_path'])
+        if not path.is_file():
+            QMessageBox.information(self, '파일 없음', '해당 영상 파일이 이미 없습니다.')
+            return
+        extras = related_sidecars(path)
+        if QMessageBox.question(self, '영상 휴지통 삭제',
+                f'다음 영상을 휴지통으로 이동하시겠습니까?\n{path.name}\n'
+                f'연관 자막/메타데이터 {len(extras)}개도 함께 처리합니다.\n'
+                '메모는 DB에 보존되며 라이브러리에서 숨겨집니다.') != QMessageBox.StandardButton.Yes:
+            return
+        self.save_memo(silent=True)
+        self.player.stop()
+        self.player.setSource(QUrl())
+        errors = []
+        for target in [path, *extras]:
+            if target.exists() and not QFile.moveToTrash(str(target)):
+                errors.append(str(target))
+        self.add_log(f'[휴지통 삭제] {path} (연관 파일 {len(extras)}개, 실패 {len(errors)}개)')
+        self.refresh_library()
+        if errors:
+            QMessageBox.warning(self, '일부 파일 휴지통 실패', '\n'.join(errors))
 
     def open_folder(self, path: str):
         try:
@@ -1205,6 +1698,10 @@ class MainWindow(QMainWindow):
         set_setting(self.db, "split_inner", json.dumps(self.inner_splitter.sizes()))
         set_setting(self.db, "window_width", str(self.width()))
         set_setting(self.db, "window_height", str(self.height()))
+        set_setting(self.db, 'library_col_widths',
+                    json.dumps([self.library_table.columnWidth(i) for i in range(self.library_table.columnCount())]))
+        set_setting(self.db, 'jobs_col_widths',
+                    json.dumps([self.jobs_table.columnWidth(i) for i in range(self.jobs_table.columnCount())]))
         self.player.stop()
         self.db.close()
         LOGGER.info("정상 종료")
