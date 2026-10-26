@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-Minton Video Library v1.3 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
+Minton Video Library v1.3.1 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
 =====================================================================
 [프로그램 전체 기능 및 동작 보존 목록]
 01. Windows Python 3.12 + PySide6 기반 단일 Python 소스 GUI.
@@ -84,6 +84,18 @@ Minton Video Library v1.3 | 배드민턴 유튜브 영상 다운로드 및 관�
 69. 다운로드/썸네일 작업 상호 충돌 방지, 백필 작업의 디스크 이동/종료 중지 보호.
 70. 기존 V1.0~V1.2 DB, 메모, 분류, 자막, 클립 구간, 경로 및 로그 내용 유지.
 
+[V1.3.1 수정 - 기존 V1.3 기능/로그/UI 보존]
+71. 다운로드 대기열의 실패 행마다 전용 '↻ 다시받기' 버튼 추가.
+72. 개별 재시도는 해당 영상/재생목록 작업만 실행하며 다른 대기 작업은 그대로 유지.
+73. 재시도 모드 선택: 원래 자막 옵션 그대로 받기 또는 자막 제외하고 영상만 받기.
+74. 자막 429/요청 제한 시 yt-dlp 마지막 오류 메시지를 DB/화면/로그에 기록하고 재시도 안내.
+75. 오류 발생 후 진행률이 100%로 보이는 혼동 방지: 실패 작업의 진행률을 0%로 초기화.
+76. UI의 '로그 파일 열기' 버튼으로 Windows 메모장에서 기존 로그를 즉시 열기.
+77. DB 컬럼 retry_without_subs는 구형 DB에서 비파괴 마이그레이션; 기존 작업/메모/로그 보존.
+78. 기존 다중 선택 후 '선택 항목 다시 대기' 동작은 원래 자막 설정 재시도로 유지.
+79. 파일 다운로드 시 원본 `.part` 이어받기/원본 MP4·SRT·JPG·메모 보존.
+80. 사용자 설정 다운로드 간격, Qt 재생기, 오디오 진단, 썸네일, 분류, 자막 탐색 유지.
+
 [저장 위치]
 - 프로그램: D:\stockproj\minton_video_library\minton_video_library.py (권장)
 - 데이터베이스: 라이브러리루트\_database\library.db (영상과 함께 이동)
@@ -141,7 +153,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QAbstractItemView, QCheckBox, QDialog, QInputDialog, QListWidgetItem,
 )
 
-APP_TITLE = "Minton Video Library v1.3"
+APP_TITLE = "Minton Video Library v1.3.1"
 APP_DATA = Path(os.getenv("LOCALAPPDATA") or (Path.home() / ".local" / "share")) / "MintonVideoLibrary"
 # DB 경로는 앱 폴더와 분리하여 라이브러리 폴더와 항상 함께 이동한다.
 LEGACY_DB_PATH = APP_DATA / "library.db"
@@ -360,6 +372,7 @@ def init_db(migrate_old: bool = True) -> None:
                 'playlist_index': 'INTEGER NOT NULL DEFAULT 0',
                 'channel_override': "TEXT NOT NULL DEFAULT ''",
                 'playlist_override': "TEXT NOT NULL DEFAULT ''",
+                'retry_without_subs': 'INTEGER NOT NULL DEFAULT 0',
             },
             'videos': {'title_override': "TEXT NOT NULL DEFAULT ''"},
         }
@@ -752,10 +765,12 @@ class DownloadWorker(QThread):
     activity = Signal(str)
     progress_signal = Signal(int, float)
 
-    def __init__(self, root: str, interval: int, parent=None):
+    def __init__(self, root: str, interval: int, parent=None, only_job_id: int | None = None):
         super().__init__(parent)
         self.root = Path(root)
         self.interval = interval
+        # 실패 행의 다시받기는 다른 대기 작업을 실행하지 않는 전용 1건 모드.
+        self.only_job_id = only_job_id
         self._stop = threading.Event()
         self._pause = threading.Event()
         self._lock = threading.Lock()
@@ -932,10 +947,17 @@ class DownloadWorker(QThread):
             korean_channel = safe_name(job['channel_override'] or job['playlist_channel'] or dest.name)
             file_template = (korean_channel.replace('%', '%%')
                              + ' - %(title)s [%(id)s] - %(upload_date>%Y-%m-%d)s.%(ext)s')
+        skip_subtitles = bool(job['retry_without_subs'])
+        # 유튜브 자동자막 ko-vi가 429를 반환할 때는 MP4만 재시도할 수 있게 한다.
+        # 기본 다운로드에서는 기존 한국어 일반/자동자막 옵션을 반드시 유지한다.
+        subtitle_flags = (["--no-write-subs", "--no-write-auto-subs"] if skip_subtitles else
+                          ["--write-subs", "--write-auto-subs", "--sub-langs", "ko.*",
+                           "--convert-subs", "srt"])
+        if skip_subtitles:
+            self._emit(f"[자막 제외 재시도] #{job['id']} 자막 HTTP 429 회피: MP4/썸네일/정보만 받습니다. 기존 SRT는 삭제하지 않습니다")
         cmd = [*self._shared_cmd(), "--no-playlist", "--continue", "--newline", "--progress",
                "-f", FORMAT_SELECTOR, "--merge-output-format", "mp4",
-               "--write-subs", "--write-auto-subs", "--sub-langs", "ko.*",
-               "--convert-subs", "srt", "--write-info-json", "--no-write-playlist-metafiles",
+               *subtitle_flags, "--write-info-json", "--no-write-playlist-metafiles",
                "--write-thumbnail", "--convert-thumbnails", "jpg",
                "-P", str(dest if dest else self.root),
                "-o", file_template,
@@ -947,6 +969,8 @@ class DownloadWorker(QThread):
         info: dict[str, str] = {}
         last_log_percentage = -10
         last_persisted_step = -1
+        # 종료 코드 1만 보이면 원인을 알 수 없어 yt-dlp 원문 오류를 저장한다.
+        yt_errors: list[str] = []
         try:
             env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -980,6 +1004,9 @@ class DownloadWorker(QThread):
                             last_log_percentage = percent
                     else:
                         self._emit("[yt-dlp] " + line)
+                        if line.startswith('ERROR:') or ('HTTP Error 429' in line):
+                            yt_errors.append(line)
+                            yt_errors = yt_errors[-5:]
                     if self._stop.is_set() and proc.poll() is None:
                         proc.terminate()
                 retcode = proc.wait()
@@ -991,8 +1018,14 @@ class DownloadWorker(QThread):
                 self._update_job(db, job["id"], "queued", "중단됨(.part 재개 가능)")
                 return
             if retcode != 0:
-                self._update_job(db, job["id"], "failed", f"yt-dlp 종료 코드 {retcode} (상세 로그 참고)")
+                last_error = yt_errors[-1] if yt_errors else '상세 오류는 아래 로그 참고'
+                detail = f"yt-dlp 종료 코드 {retcode} | {last_error}"
+                self._update_job(db, job["id"], "failed", detail, 0)
                 self._emit(f"[실패] #{job['id']} yt-dlp 종료 코드 {retcode}")
+                self._emit(f"[실패 상세] #{job['id']} {last_error}")
+                if '429' in last_error and 'subtitle' in last_error.lower():
+                    self._emit(f"[자막 요청 제한] #{job['id']} 한국어 자동자막에서 HTTP 429. "
+                               "반복 요청하지 말고 시간을 두었다가 실패 행의 '다시받기' → '자막 제외하고 영상만'을 선택하세요.")
                 return
             media_path = Path(info.get("FILE") or "")
             if not media_path.is_file() and video_id:
@@ -1002,7 +1035,7 @@ class DownloadWorker(QThread):
                 if matches:
                     media_path = matches[0]
             if not media_path.is_file():
-                self._update_job(db, job["id"], "failed", "성공 응답이지만 저장된 동영상 파일을 찾지 못함")
+                self._update_job(db, job["id"], "failed", "성공 응답이지만 저장된 동영상 파일을 찾지 못함", 0)
                 return
             data = local_video_record(media_path)
             data['source_url'] = video_url
@@ -1029,7 +1062,7 @@ class DownloadWorker(QThread):
             if self._stop.is_set():
                 self._update_job(db, job["id"], "queued", "중단됨(.part 재개 가능)")
             else:
-                self._update_job(db, job["id"], "failed", str(ex))
+                self._update_job(db, job["id"], "failed", str(ex), 0)
                 self._emit(f"[다운로드 오류] {type(ex).__name__}: {ex}")
         finally:
             self.changed.emit()
@@ -1049,9 +1082,16 @@ class DownloadWorker(QThread):
                     if self._stop.wait(0.3):
                         break
                     continue
-                job = db.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
+                if self.only_job_id is not None:
+                    job = db.execute("SELECT * FROM jobs WHERE status='queued' AND id=?",
+                                     (self.only_job_id,)).fetchone()
+                else:
+                    job = db.execute("SELECT * FROM jobs WHERE status='queued' ORDER BY id LIMIT 1").fetchone()
                 if job is None:
-                    self._emit("[대기열 완료] 더 이상 대기 중인 영상이 없습니다.")
+                    if self.only_job_id is not None:
+                        self._emit(f"[개별 재시도 완료] #{self.only_job_id} 처리 종료, 나머지 대기 작업은 유지")
+                    else:
+                        self._emit("[대기열 완료] 더 이상 대기 중인 영상이 없습니다.")
                     break
                 if job["kind"] == "video" and previous_download_finished is not None:
                     wait_for = self.interval - (time.monotonic() - previous_download_finished)
@@ -1308,7 +1348,7 @@ class MainWindow(QMainWindow):
 
         queue_bar = QHBoxLayout()
         self.start_btn = QPushButton("▶ 다운로드 시작 / 재개")
-        self.start_btn.clicked.connect(self.start_download)
+        self.start_btn.clicked.connect(lambda: self.start_download())
         queue_bar.addWidget(self.start_btn)
         self.pause_btn = QPushButton("Ⅱ 일시정지 (현재 파일 완료 후)")
         self.pause_btn.clicked.connect(self.pause_download)
@@ -1322,6 +1362,10 @@ class MainWindow(QMainWindow):
         delete_btn = QPushButton("선택 대기열 삭제")
         delete_btn.clicked.connect(self.delete_jobs)
         queue_bar.addWidget(delete_btn)
+        log_open_btn = QPushButton("로그 파일 열기")
+        log_open_btn.setToolTip(str(LOG_PATH) + "\nWindows 메모장으로 다운로드 상세 로그를 엽니다.")
+        log_open_btn.clicked.connect(self.open_log_file)
+        queue_bar.addWidget(log_open_btn)
         queue_bar.addStretch()
         self.activity_label = QLabel("대기")
         queue_bar.addWidget(self.activity_label)
@@ -1335,8 +1379,8 @@ class MainWindow(QMainWindow):
         progress_row.addWidget(self.current_progress, 1)
         layout.addLayout(progress_row)
 
-        self.jobs_table = QTableWidget(0, 5)
-        self.jobs_table.setHorizontalHeaderLabels(["번호", "상태", "진행률", "영상/재생목록", "오류/메시지"])
+        self.jobs_table = QTableWidget(0, 6)
+        self.jobs_table.setHorizontalHeaderLabels(["번호", "상태", "진행률", "영상/재생목록", "오류/메시지", "다시받기"])
         self.jobs_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.jobs_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.jobs_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1349,6 +1393,7 @@ class MainWindow(QMainWindow):
         self.jobs_table.setColumnWidth(0, 55)
         self.jobs_table.setColumnWidth(1, 100)
         self.jobs_table.setColumnWidth(2, 85)
+        self.jobs_table.setColumnWidth(5, 110)
         self.jobs_table.setMinimumHeight(130)
 
         bottom = QSplitter(Qt.Orientation.Horizontal)
@@ -1631,6 +1676,9 @@ class MainWindow(QMainWindow):
                            (self.jobs_table, 'jobs_col_widths')):
             try:
                 sizes = json.loads(get_setting(self.db, key, '[]'))
+                if table is self.jobs_table and len(sizes) == 5:
+                    # V1.3 다운로드 열 너비 설정은 유지하고 새 다시받기 열만 추가.
+                    sizes = [*sizes, 110]
                 if table is self.library_table and len(sizes) == 8:
                     # V1.2 제목/채널/분류/크기/업로드일/메모/파일 컬럼 이동
                     sizes = [130, sizes[0], sizes[1], 180, 90, sizes[2], sizes[3],
@@ -1956,13 +2004,78 @@ class MainWindow(QMainWindow):
                 ids.add(int(target.text()))
         return sorted(ids)
 
+    def open_log_file(self):
+        """현재 로테이션 중인 원본 로그를 Windows 메모장으로 연다."""
+        try:
+            LOGGER.info('[로그 파일 열기] %s', LOG_PATH)
+            if not LOG_PATH.exists():
+                LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                LOG_PATH.touch()
+            if os.name == 'nt':
+                subprocess.Popen(['notepad.exe', str(LOG_PATH)], **popen_flags())
+            elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_PATH))):
+                raise RuntimeError('기본 텍스트 편집기로 로그를 열지 못했습니다')
+            self.add_log(f'[로그 파일 열기] {LOG_PATH}')
+        except (OSError, RuntimeError) as ex:
+            self.add_log(f'[로그 파일 열기 실패] {type(ex).__name__}: {ex}')
+            QMessageBox.warning(self, '로그 파일 열기 실패', f'{LOG_PATH}\n\n{ex}')
+
+    def retry_failed_job(self, job_id: int):
+        """실패 항목 1개만 재시도. 기존 대기열에 영향을 주지 않는다."""
+        job = self.db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+        if not job or job['status'] != 'failed':
+            QMessageBox.information(self, '다시받기', '현재 실패 상태인 작업만 다시 받을 수 있습니다.')
+            self.refresh_jobs()
+            return
+        if self.worker and self.worker.isRunning():
+            QMessageBox.information(self, '다운로드 중', '현재 다운로드를 끝내거나 중단한 뒤 실패 항목을 다시받으세요.')
+            return
+        if self.thumbnail_worker and self.thumbnail_worker.isRunning():
+            QMessageBox.information(self, '썸네일 작업 중', '누락 썸네일 작업을 먼저 종료해 주세요.')
+            return
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(f'#{job_id} 실패 작업 다시받기')
+        box.setText(f"이 작업 1개만 다시 다운로드합니다.\n\n{job['title'] or job['url']}")
+        box.setInformativeText(
+            '한국어 자동자막 HTTP 429 오류라면 「자막 제외하고 영상만」을 권장합니다.\n'
+            '자막 제외 모드에서는 기존 자막을 삭제하지 않으며 MP4·썸네일·정보 파일은 다운로드합니다.\n'
+            '반복적인 429 요청은 제한을 악화시킬 수 있으니 재시도 간 충분히 시간을 두세요.')
+        full_btn = box.addButton('영상+자막 다시받기', QMessageBox.ButtonRole.AcceptRole)
+        no_sub_btn = None
+        if job['kind'] == 'video':
+            no_sub_btn = box.addButton('자막 제외하고 영상만', QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        # 실제 이전 실패 사유에 429가 남아 있다면 원인을 피하는 옵션을 강조.
+        if no_sub_btn and '429' in str(job['error']):
+            box.setDefaultButton(no_sub_btn)
+        else:
+            box.setDefaultButton(full_btn)
+        box.exec()
+        button = box.clickedButton()
+        if button is not full_btn and button is not no_sub_btn:
+            return
+        without_subs = bool(no_sub_btn and button is no_sub_btn)
+        with self.db:
+            updated = self.db.execute(
+                "UPDATE jobs SET status='queued', progress=0, error='',retry_without_subs=?,updated_at=? "
+                "WHERE id=? AND status='failed'",
+                (1 if without_subs else 0, now_str(), job_id)).rowcount
+        if not updated:
+            self.refresh_jobs()
+            return
+        mode = '자막 제외 / 영상만' if without_subs else '원래 영상·자막 옵션'
+        self.add_log(f'[개별 재시도 예약] #{job_id} / {mode} / 나머지 대기열 유지')
+        self.refresh_jobs()
+        self.start_download(only_job_id=job_id)
+
     def retry_jobs(self):
         ids = self.selected_job_ids()
         if not ids:
             return
         with self.db:
             for job_id in ids:
-                self.db.execute("UPDATE jobs SET status='queued',progress=0,error='',updated_at=? "
+                self.db.execute("UPDATE jobs SET status='queued',progress=0,error='',retry_without_subs=0,updated_at=? "
                                 "WHERE id=? AND status<>'running'", (now_str(), job_id))
         self.add_log(f"대기 상태로 복원: {len(ids)}개")
         self.refresh_jobs()
@@ -2007,6 +2120,15 @@ class MainWindow(QMainWindow):
             bar.setValue(int(float(job['progress']) * 10))
             bar.setFormat(f"{float(job['progress']):.1f}%")
             table.setCellWidget(i, 2, bar)
+            # 버튼은 실패 행에서만 표시하며, ID를 바인딩하여 잘못된 행을 재시도하지 않음.
+            if job['status'] == 'failed':
+                retry_button = QPushButton('↻ 다시받기', table)
+                retry_button.setToolTip('이 실패 작업 1개만 다시받기 (영상+자막 / 자막 제외 선택)')
+                retry_button.clicked.connect(lambda _checked=False, target_id=int(job['id']):
+                                             self.retry_failed_job(target_id))
+                table.setCellWidget(i, 5, retry_button)
+            else:
+                table.removeCellWidget(i, 5)
             if job['status'] == 'running':
                 active = job
             if job['id'] in selected:
@@ -2015,6 +2137,10 @@ class MainWindow(QMainWindow):
         if active is not None:
             self.current_progress.setValue(int(float(active['progress']) * 10))
             self.current_progress.setFormat(f"{float(active['progress']):.1f}%")
+        else:
+            # 끝난/실패한 작업의 이전 100% 수치가 현재 진행률에 남지 않게 한다.
+            self.current_progress.setValue(0)
+            self.current_progress.setFormat('0.0%')
 
     def on_worker_progress(self, job_id, progress):
         # 기존 동작처럼 테이블 전체 재구성 없이 진행률만 업데이트한다.
@@ -2029,7 +2155,7 @@ class MainWindow(QMainWindow):
                     bar.setFormat(f'{progress:.1f}%')
                 break
 
-    def start_download(self):
+    def start_download(self, only_job_id: int | None = None):
         if self.thumbnail_worker and self.thumbnail_worker.isRunning():
             QMessageBox.information(self, '썸네일 작업 중', '누락 썸네일 작업을 중단하거나 끝낸 뒤 다운로드하세요.')
             return
@@ -2052,7 +2178,12 @@ class MainWindow(QMainWindow):
         if not root:
             QMessageBox.warning(self, "경로 오류", "다운로드 폴더를 지정하세요.")
             return
-        if not self.db.execute("SELECT 1 FROM jobs WHERE status='queued' LIMIT 1").fetchone():
+        if only_job_id is not None:
+            pending = self.db.execute("SELECT 1 FROM jobs WHERE status='queued' AND id=?",
+                                      (only_job_id,)).fetchone()
+        else:
+            pending = self.db.execute("SELECT 1 FROM jobs WHERE status='queued' LIMIT 1").fetchone()
+        if not pending:
             QMessageBox.information(self, "대기열 없음", "영상 주소를 먼저 추가하거나 선택 항목을 다시 대기시켜 주세요.")
             return
         try:
@@ -2064,7 +2195,7 @@ class MainWindow(QMainWindow):
         self.root_input.setEnabled(False)
         self.browse_btn.setEnabled(False)
         self.interval_spin.setEnabled(False)
-        self.worker = DownloadWorker(root, self.interval_spin.value(), self)
+        self.worker = DownloadWorker(root, self.interval_spin.value(), self, only_job_id=only_job_id)
         self.worker.message.connect(self.add_log)
         self.worker.changed.connect(self.on_worker_changed)
         self.worker.activity.connect(self.activity_label.setText)

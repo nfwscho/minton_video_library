@@ -1,4 +1,4 @@
-# INSTALL.md — Minton Video Library V1.3 설치·업데이트·이동 안내
+# INSTALL.md — Minton Video Library V1.3.1 설치·업데이트·이동 안내
 
 ## 1. Windows 사전 준비
 
@@ -45,7 +45,33 @@ py -3.12 -m venv .venv
 
 `py -3.12`가 실행되지 않으면 Python 3.12를 먼저 설치하세요. 이미 `.venv`가 있으면 다시 만들지 않아도 됩니다.
 
-## 3. V1.2에서 V1.3으로 업데이트
+## 3. 기존 V1.3에서 V1.3.1로 업데이트 (현재 버전)
+
+1. **프로그램을 종료**합니다. 다운로드가 실행 중이라면 먼저 중단하고 프로그램이 완전히 종료됐는지 확인합니다.
+2. 원본 DB를 백업합니다. 기존 파일은 삭제하거나 초기화하지 않습니다.
+
+   ```powershell
+   $db = 'D:\99.유튜브다운\minton.youtube\_database\library.db'
+   Copy-Item $db 'D:\stockproj\minton_video_library\library_before_v131.db' -ErrorAction Stop
+   ```
+
+   다운로드 폴더가 다른 경우 `$db`를 실제 경로로 바꿉니다. DB는 프로그램 종료 후 복사해야 WAL 기록까지 정상 반영됩니다.
+3. V1.3.1 ZIP에서 `minton_video_library.py`, `README.md`, `INSTALL.md`, `.gitignore` 4개를 기존 프로젝트에 덮어씁니다. **기존 MP4, JPG, SRT, `library.db`는 건드리지 않습니다.**
+4. 실행합니다.
+
+   ```powershell
+   cd D:\stockproj\minton_video_library
+   .\.venv\Scripts\python.exe minton_video_library.py
+   ```
+
+5. 기존 실패 영상에 `↻ 다시받기` 버튼이 표시되는지 확인합니다. 자막의 `HTTP 429` 오류였다면 **자막 제외하고 영상만**을 선택할 수 있습니다. 선택한 항목 하나만 실행되며 다른 작업은 유지됩니다.
+6. 화면 위쪽 **로그 파일 열기** 버튼으로 `%LOCALAPPDATA%\MintonVideoLibrary\logs\minton_video_library.log` 원본 파일을 메모장에서 확인할 수 있습니다.
+
+V1.3.1은 DB의 `jobs.retry_without_subs` 컬럼을 *없는 경우에만* 추가합니다. 기존 다운로드 상태, 영상별 메모, 분류, 태그 및 클립 표시 구간은 보존됩니다. 기존 V1.3의 컬럼 너비 설정도 유지하고 새 **다시받기** 열 너비만 추가합니다.
+
+**429 대응 주의:** 서버에서 요청을 제한하고 있으므로 자막을 제외해도 영상 자체가 제한된 경우에는 실패할 수 있습니다. 반복 요청을 피하고 시간을 두세요. 429 발생 시 자동으로 대량 재시도를 반복하지 않습니다.
+
+## 3-A. 이전 기록: V1.2에서 V1.3으로 업데이트
 
 **기존 `_database\library.db`는 삭제하지 마세요.** 새 버전에서는 DB를 초기화하지 않고 `videos.playlist_title`, `videos.playlist_id` 컬럼을 필요할 때에만 추가하며, 메모/분류/클립 구간/작업/설정은 그대로 보존합니다.
 
