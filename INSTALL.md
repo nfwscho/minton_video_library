@@ -1,4 +1,4 @@
-# INSTALL.md — Minton Video Library V1.3.1 설치·업데이트·이동 안내
+# INSTALL.md — Minton Video Library V1.3.2 설치·업데이트·이동 안내
 
 ## 1. Windows 사전 준비
 
@@ -45,7 +45,32 @@ py -3.12 -m venv .venv
 
 `py -3.12`가 실행되지 않으면 Python 3.12를 먼저 설치하세요. 이미 `.venv`가 있으면 다시 만들지 않아도 됩니다.
 
-## 3. 기존 V1.3에서 V1.3.1로 업데이트 (현재 버전)
+## 2-A. V1.3.1 → V1.3.2 업데이트 (현재 버전)
+
+1. 프로그램의 다운로드 및 썸네일 작업을 중지하고 프로그램을 완전히 종료합니다.
+2. 메모/분류/작업 데이터 백업(다른 드라이브를 사용한다면 `$root` 값을 수정하세요):
+
+   ```powershell
+   $root = 'D:\99.유튜브다운\minton.youtube'
+   $backup = 'D:\stockproj\minton_video_library\library_before_v132.db'
+   Copy-Item (Join-Path $root '_database\library.db') $backup -ErrorAction Stop
+   ```
+
+3. V1.3.2 ZIP의 `minton_video_library.py`, `README.md`, `INSTALL.md`, `.gitignore`를 기존 `D:\stockproj\minton_video_library`에 덮어씁니다. **동영상/DB/SRT/JPG는 절대 지우지 마세요.**
+4. 기존 가상환경으로 실행합니다:
+
+   ```powershell
+   cd D:\stockproj\minton_video_library
+   .\.venv\Scripts\python.exe minton_video_library.py
+   ```
+
+5. **폴더 다시 검색**을 누른 뒤 `재생시간` 뒤의 **유튜브 주소** 열을 클릭해 기본 브라우저가 열리는지 확인합니다. 폴더 상단에서 저장 드라이브의 여유 공간, 사용률, 전체 영상 개수/크기도 확인합니다.
+
+V1.3.2는 DB 구조를 바꾸지 않습니다. 기존 메모/분류/태그/클립 구간/다운로드 작업/로그는 모두 유지됩니다. 이전 11열 컬럼 너비 값은 새 12열 구성으로 마이그레이션됩니다.
+
+**용량 기준:** 디스크 잔여 공간은 해당 드라이브에서 OS가 보고하는 값이며, 영상 크기 합계는 **DB에 등록되고 실제 존재하는 영상 파일**만 대상으로 합니다. SRT/썸네일/DB 등은 합계에서 제외합니다. 미등록 영상은 폴더 다시 검색으로 추가하세요.
+
+## 3. 기존 V1.3에서 V1.3.1로 업데이트 (이전 단계 안내)
 
 1. **프로그램을 종료**합니다. 다운로드가 실행 중이라면 먼저 중단하고 프로그램이 완전히 종료됐는지 확인합니다.
 2. 원본 DB를 백업합니다. 기존 파일은 삭제하거나 초기화하지 않습니다.
@@ -173,7 +198,7 @@ cd D:\stockproj\minton_video_library
 
 ### 라이브러리 표시
 
-- 목록 **썸네일·제목·채널·재생목록명·재생시간·대분류·세부분류·크기·업로드일·메모·파일** 순서로 표시합니다.
+- 목록 **썸네일·제목·채널·재생목록명·재생시간·유튜브 주소·대분류·세부분류·크기·업로드일·메모·파일** 순서로 표시합니다. 유튜브 주소를 클릭하면 웹 브라우저가 열립니다.
 - `HH:MM:SS` 형식의 재생시간은 `.info.json`, 이전 DB 또는 `ffprobe`/재생기 재생시간에서 채웁니다. 미확인 값은 `--:--:--`입니다.
 - 열 경계 드래그로 크기를 변경하며 종료 시 저장합니다. 기존 V1.2 열 너비 저장값은 V1.3 구성에 맞춰 이전됩니다.
 
@@ -222,7 +247,7 @@ V1.1의 사용자 지정 yt-dlp 옵션을 그대로 유지합니다.
 cd D:\stockproj\minton_video_library
 git status
 git add minton_video_library.py README.md INSTALL.md .gitignore
-git commit -m "feat: v1.3 add thumbnail library, playback audio diagnostics and playlist duration columns"
+git commit -m "feat: v1.3.2 add YouTube video links and disk/library storage summary"
 git push origin main
 ```
 
@@ -254,4 +279,4 @@ git push origin main
 notepad "$env:LOCALAPPDATA\MintonVideoLibrary\logs\minton_video_library.log"
 ```
 
-**V1.3 검증 범위:** Python 문법 검사, SQLite 마이그레이션 및 기존 메모·태그 보존, 라이브러리 이동, 썸네일 매칭·동반 파일 개명, MP4 재다운로드 없는 `--skip-download` 명령 단위 테스트(가짜 실행기), FFprobe 길이 판독, ZIP 무결성 검사를 통과했습니다. PySide6 및 실제 YouTube/Windows 오디오 통합 테스트는 환경 제약으로 수행하지 못했습니다.
+**V1.3.2 검증 범위:** Python 문법, V1.3.1 회귀 테스트, YouTube 영상 링크 복원/브라우저 호출(모의 UI), 중복·누락 영상의 크기 제외, 저장 드라이브 정보(임시 디스크), 이동식 라이브러리 DB와 메모 보존을 확인했습니다. 기존 V1.3 기능의 검증 범위: Python 문법 검사, SQLite 마이그레이션 및 기존 메모·태그 보존, 라이브러리 이동, 썸네일 매칭·동반 파일 개명, MP4 재다운로드 없는 `--skip-download` 명령 단위 테스트(가짜 실행기), FFprobe 길이 판독, ZIP 무결성 검사를 통과했습니다. PySide6 및 실제 YouTube/Windows 오디오 통합 테스트는 환경 제약으로 수행하지 못했습니다.

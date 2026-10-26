@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-Minton Video Library v1.3.1 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
+Minton Video Library v1.3.2 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
 =====================================================================
 [프로그램 전체 기능 및 동작 보존 목록]
 01. Windows Python 3.12 + PySide6 기반 단일 Python 소스 GUI.
@@ -96,6 +96,18 @@ Minton Video Library v1.3.1 | 배드민턴 유튜브 영상 다운로드 및 관
 79. 파일 다운로드 시 원본 `.part` 이어받기/원본 MP4·SRT·JPG·메모 보존.
 80. 사용자 설정 다운로드 간격, Qt 재생기, 오디오 진단, 썸네일, 분류, 자막 탐색 유지.
 
+[V1.3.2 추가 - 기존 V1.3.1 기능·로그·DB 보존]
+81. 영상 라이브러리 목록에 전체 YouTube 영상 주소 컬럼 추가(재생목록과 별개로 개별 영상 링크).
+82. YouTube 주소 셀을 한 번 클릭하면 기본 웹브라우저에서 해당 영상을 열기; 일반 셀 더블클릭 재생은 유지.
+83. DB source_url이 비어 있는 기존 영상은 올바른 11자리 YouTube ID로 영상 주소를 복원하여 표시.
+84. YouTube ID가 없는 순수 로컬 파일에는 임의 주소를 생성하지 않고 '주소 없음' 표시.
+85. 저장 라이브러리 폴더가 속한 디스크의 남은 공간/전체 공간/사용률을 실시간 상태 영역에 표시.
+86. 라이브러리 DB에 등록되고 실제 존재하는 전체 동영상의 크기를 파일 통계로 합산(필터와 무관).
+87. 중복 경로를 단 한 번만 합산하며 누락 영상, JPG/SRT, DB, 로그는 영상 크기에서 제외.
+88. 60초마다 용량 상태 갱신 및 다운로드/폴더 검색/라이브러리 위치 전환 즉시 갱신.
+89. 기존 11열 저장 너비를 새로운 12열 순서로 이관하고 이후 수정한 너비를 저장.
+90. 검색에 YouTube 주소도 포함하고 UI에 복사 가능한 링크 문자열 및 툴팁 제공.
+
 [저장 위치]
 - 프로그램: D:\stockproj\minton_video_library\minton_video_library.py (권장)
 - 데이터베이스: 라이브러리루트\_database\library.db (영상과 함께 이동)
@@ -142,7 +154,7 @@ from urllib.parse import parse_qs, urlparse
 os.environ.setdefault('QT_MEDIA_BACKEND', 'ffmpeg')
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, QFile, QSize
-from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPixmap
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPixmap, QColor
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QMediaDevices
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
@@ -153,7 +165,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QAbstractItemView, QCheckBox, QDialog, QInputDialog, QListWidgetItem,
 )
 
-APP_TITLE = "Minton Video Library v1.3.1"
+APP_TITLE = "Minton Video Library v1.3.2"
 APP_DATA = Path(os.getenv("LOCALAPPDATA") or (Path.home() / ".local" / "share")) / "MintonVideoLibrary"
 # DB 경로는 앱 폴더와 분리하여 라이브러리 폴더와 항상 함께 이동한다.
 LEGACY_DB_PATH = APP_DATA / "library.db"
@@ -520,6 +532,41 @@ def yt_video_url(source_url: str, video_id: str) -> str:
     if not vid and re.fullmatch(r'[A-Za-z0-9_-]{11}', str(video_id or '')):
         vid = video_id
     return f'https://www.youtube.com/watch?v={vid}' if vid else ''
+
+
+def collect_video_storage(db: sqlite3.Connection, root: Path) -> tuple[int, int]:
+    """라이브러리 DB에 등록된 실제 동영상의 중복 없는 파일 수와 크기 합계.
+
+    표시 검색/채널/분류 필터에 영향을 받지 않는다. DB를 옮겨도 상대경로로
+    조회하며, 누락/루트 밖/확장자가 동영상이 아닌 파일은 제외한다.
+    """
+    total_bytes = 0
+    file_count = 0
+    seen: set[str] = set()
+    base = Path(root).resolve()
+    for rec in db.execute("SELECT DISTINCT file_path FROM videos WHERE file_path<>''"):
+        try:
+            path = media_path(rec['file_path'], base)
+            if path.suffix.lower() not in VIDEO_EXTS or not is_in_directory(path, base):
+                continue
+            resolved = path.resolve()
+            key = os.path.normcase(str(resolved))
+            if key in seen:
+                continue
+            seen.add(key)
+            if not resolved.is_file():
+                continue
+            total_bytes += resolved.stat().st_size
+            file_count += 1
+        except (OSError, ValueError, TypeError):
+            # 오래된/손상된 파일 경로는 요약에서 제외하고 기존 DB 원본은 유지한다.
+            continue
+    return file_count, total_bytes
+
+
+def video_youtube_link(source_url: str, video_id: str) -> str:
+    """명확한 YouTube ID로만 직접 영상 링크를 구성한다. 로컬 영상은 공백."""
+    return yt_video_url(source_url, video_id)
 
 
 def probe_duration_seconds(media: Path) -> int:
@@ -1265,12 +1312,14 @@ class MainWindow(QMainWindow):
         self._last_missing: set[str] = set()
         self._segment_start: int | None = None
         self._segment_end: int | None = None
+        self._storage_last_refresh = 0.0
         self._build_ui()
         self._load_settings()
         self.setup_audio_devices()
         self.update_play_button()
         self.refresh_jobs()
         self.refresh_library()
+        self.update_storage_summary(force=True)
         QTimer.singleShot(500, self.scan_library)
         # 실파일 삭제 즉시(최대 15초) 라이브러리에서 숨김; 폴더 이동은 자동 재검색.
         self.check_timer = QTimer(self)
@@ -1279,6 +1328,9 @@ class MainWindow(QMainWindow):
         self.auto_scan_timer = QTimer(self)
         self.auto_scan_timer.timeout.connect(lambda: self.scan_library(auto=True))
         self.auto_scan_timer.start(60000)
+        self.storage_timer = QTimer(self)
+        self.storage_timer.timeout.connect(lambda: self.update_storage_summary(force=True))
+        self.storage_timer.start(60000)
         self.add_log(f"프로그램 시작 | DB: {DB_PATH} | 로그: {LOG_PATH}")
         self.setWindowTitle(APP_TITLE)
         try:
@@ -1320,6 +1372,23 @@ class MainWindow(QMainWindow):
         self.interval_spin.valueChanged.connect(self.save_settings)
         folder_row.addWidget(self.interval_spin)
         sr.addLayout(folder_row)
+        storage_row = QHBoxLayout()
+        storage_row.addWidget(QLabel('저장 드라이브'))
+        self.drive_space_label = QLabel('남은 공간 계산 중…')
+        self.drive_space_label.setToolTip('현재 다운로드 폴더가 위치한 드라이브의 실제 디스크 사용량입니다.')
+        storage_row.addWidget(self.drive_space_label)
+        self.disk_usage_bar = QProgressBar()
+        self.disk_usage_bar.setRange(0, 1000)
+        self.disk_usage_bar.setFixedWidth(150)
+        self.disk_usage_bar.setMaximumHeight(20)
+        self.disk_usage_bar.setFormat('디스크 %p% 사용')
+        storage_row.addWidget(self.disk_usage_bar)
+        storage_row.addStretch(1)
+        storage_row.addWidget(QLabel('전체 동영상'))
+        self.library_storage_label = QLabel('계산 중…')
+        self.library_storage_label.setToolTip('현재 검색·필터와 무관하게 라이브러리에 등록된 실제 동영상 파일만 합산합니다. JPG/SRT/DB와 누락 파일 제외.')
+        storage_row.addWidget(self.library_storage_label)
+        sr.addLayout(storage_row)
         layout.addWidget(settings)
 
         add_box = QGroupBox("YouTube 영상/재생목록 주소 등록 (여러 URL은 줄바꿈으로 구분)")
@@ -1438,10 +1507,10 @@ class MainWindow(QMainWindow):
             manage_bar.addWidget(button)
         manage_bar.addStretch()
         ll.addLayout(manage_bar)
-        self.library_table = QTableWidget(0, 11)
+        self.library_table = QTableWidget(0, 12)
         self.library_table.setHorizontalHeaderLabels(
-            ["썸네일", "제목", "채널", "재생목록", "재생시간", "대분류", "세부분류",
-             "크기", "업로드일", "메모", "파일"])
+            ["썸네일", "제목", "채널", "재생목록", "재생시간", "유튜브 주소",
+             "대분류", "세부분류", "크기", "업로드일", "메모", "파일"])
         self.library_table.verticalHeader().setVisible(False)
         self.library_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.library_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1452,12 +1521,13 @@ class MainWindow(QMainWindow):
         self.library_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.library_table.setIconSize(QSize(112, 64))
         self.library_table.verticalHeader().setDefaultSectionSize(72)
-        for i, width in enumerate((130, 310, 115, 180, 90, 130, 145, 90, 105, 55, 100)):
+        for i, width in enumerate((130, 310, 115, 180, 90, 240, 130, 145, 90, 105, 55, 100)):
             self.library_table.setColumnWidth(i, width)
         self.library_table.verticalScrollBar().valueChanged.connect(self.schedule_visible_thumbnails)
         self.library_table.horizontalScrollBar().valueChanged.connect(self.schedule_visible_thumbnails)
         self.library_table.itemSelectionChanged.connect(self.on_video_selected)
-        self.library_table.cellDoubleClicked.connect(lambda _r, _c: self.play_current())
+        self.library_table.cellClicked.connect(self.on_library_cell_clicked)
+        self.library_table.cellDoubleClicked.connect(self.on_library_cell_double_clicked)
         ll.addWidget(self.library_table)
         bottom.addWidget(left)
 
@@ -1683,6 +1753,9 @@ class MainWindow(QMainWindow):
                     # V1.2 제목/채널/분류/크기/업로드일/메모/파일 컬럼 이동
                     sizes = [130, sizes[0], sizes[1], 180, 90, sizes[2], sizes[3],
                              sizes[4], sizes[5], sizes[6], sizes[7]]
+                if table is self.library_table and len(sizes) == 11:
+                    # V1.3.1 열 너비는 그대로 유지하고 YouTube 주소 너비만 추가한다.
+                    sizes = [*sizes[:5], 240, *sizes[5:]]
                 if len(sizes) == table.columnCount():
                     for i, n in enumerate(sizes):
                         table.setColumnWidth(i, max(45, min(2000, int(n))))
@@ -1756,6 +1829,7 @@ class MainWindow(QMainWindow):
         self.refresh_jobs()
         self.refresh_library()
         self.scan_library()
+        self.update_storage_summary(force=True)
         self.add_log(f'[라이브러리 전환] {old_root} -> {ACTIVE_ROOT} | DB: {DB_PATH}')
 
     def add_log(self, message: str):
@@ -2224,6 +2298,7 @@ class MainWindow(QMainWindow):
         self.interval_spin.setEnabled(True)
         self.refresh_jobs()
         self.refresh_library()
+        self.update_storage_summary(force=True)
         self.add_log("다운로드 작업자 종료")
 
     def scan_library(self, auto=False):
@@ -2267,6 +2342,61 @@ class MainWindow(QMainWindow):
         if not auto or moved:
             self.add_log(f'[라이브러리 검색] 영상 {len(records)}개 확인, 기존 메모 유지; 이동 감지 {moved}개')
         self.refresh_library()
+        self.update_storage_summary(force=True)
+
+    def update_storage_summary(self, force: bool = False):
+        """현재 드라이브 여유 용량과 라이브러리 전체 영상 합계. 네트워크 요청 없음."""
+        if not hasattr(self, 'drive_space_label') or not hasattr(self, 'db'):
+            return
+        now = time.monotonic()
+        if not force and now - self._storage_last_refresh < 30:
+            return
+        self._storage_last_refresh = now
+        root = Path(self.root_input.text().strip())
+        try:
+            disk = shutil.disk_usage(root)
+            used = disk.total - disk.free
+            percent = (used / disk.total * 100) if disk.total else 0.0
+            self.drive_space_label.setText(
+                f'남음 {format_size(disk.free)} / 전체 {format_size(disk.total)}')
+            self.disk_usage_bar.setValue(max(0, min(1000, round(percent * 10))))
+            self.disk_usage_bar.setToolTip(
+                f'드라이브 사용: {format_size(used)} / {format_size(disk.total)} ({percent:.1f}%)')
+            self.disk_usage_bar.setStyleSheet(
+                'QProgressBar::chunk { background-color: #dc554e; }'
+                if disk.total and disk.free / disk.total < 0.1 else '')
+        except (OSError, ValueError) as ex:
+            self.drive_space_label.setText('드라이브 용량 확인 불가')
+            self.drive_space_label.setToolTip(str(ex))
+            self.disk_usage_bar.setValue(0)
+        try:
+            count, size = collect_video_storage(self.db, root)
+            self.library_storage_label.setText(f'{count:,}개 / {format_size(size)}')
+            self.library_storage_label.setToolTip(
+                f'등록된 실제 동영상 {count:,}개 · 합계 {size:,}바이트\n'
+                '필터에 숨겨진 영상 포함, 누락 파일/자막/썸네일/DB 제외')
+        except sqlite3.Error as ex:
+            self.library_storage_label.setText('동영상 용량 계산 실패')
+            LOGGER.warning('[저장 용량 조회 오류] %s', ex)
+
+    def on_library_cell_clicked(self, row_idx: int, column: int):
+        """유튜브 URL 열을 클릭할 때만 외부 기본 브라우저를 호출한다."""
+        if column != 5:
+            return
+        item = self.library_table.item(row_idx, 5)
+        url = item.data(Qt.ItemDataRole.UserRole) if item is not None else ''
+        if not url:
+            return
+        if QDesktopServices.openUrl(QUrl(str(url))):
+            self.add_log(f'[유튜브 열기] {url}')
+        else:
+            self.add_log(f'[유튜브 열기 실패] {url}')
+            QMessageBox.warning(self, '브라우저 열기 실패', '기본 브라우저에서 주소를 열지 못했습니다.\n' + str(url))
+
+    def on_library_cell_double_clicked(self, _row_idx: int, column: int):
+        # 주소 열의 클릭은 이미 브라우저 열기로 처리하며 중복 재생하지 않는다.
+        if column != 5:
+            self.play_current()
 
     def refresh_library(self):
         if not hasattr(self, 'library_table'):
@@ -2284,8 +2414,9 @@ class MainWindow(QMainWindow):
         text = f'%{self.search_input.text().strip()}%'
         channel = self.channel_combo.currentText()
         filters = ('WHERE (title LIKE ? OR title_override LIKE ? OR channel LIKE ? OR memo LIKE ? '
-                   'OR video_id LIKE ? OR major_category LIKE ? OR sub_category LIKE ? OR tags LIKE ?)')
-        params = [text] * 8
+                   'OR video_id LIKE ? OR major_category LIKE ? OR sub_category LIKE ? OR tags LIKE ? '
+                   'OR source_url LIKE ?)')
+        params = [text] * 9
         if channel != '전체 채널':
             filters += ' AND channel=?'
             params.append(channel)
@@ -2294,7 +2425,7 @@ class MainWindow(QMainWindow):
             filters += ' AND major_category=?'
             params.append(category)
         rows = self.db.execute(f"""SELECT video_id,title,title_override,channel,upload_date,memo,file_path,
-            file_size,major_category,sub_category,tags,playlist_title,duration
+            file_size,major_category,sub_category,tags,playlist_title,duration,source_url
             FROM videos {filters} ORDER BY upload_date DESC,title LIMIT 10000""", params).fetchall()
         table = self.library_table
         table.blockSignals(True)
@@ -2320,21 +2451,30 @@ class MainWindow(QMainWindow):
             title = rec['title_override'] or rec['title']
             thumb = find_thumbnail(media_path(rec['file_path'])) if present else None
             self._row_thumbnail_paths.append(thumb)
+            youtube_link = video_youtube_link(rec['source_url'], rec['video_id'])
             values = ['썸네일 없음' if not thumb else '', title, rec['channel'],
                       rec['playlist_title'] or infer_playlist_name(rec['file_path']),
-                      format_duration(rec['duration']), rec['major_category'], rec['sub_category'],
+                      format_duration(rec['duration']), youtube_link or '주소 없음',
+                      rec['major_category'], rec['sub_category'],
                       format_size(bytes_used), rec['upload_date'],
                       '●' if rec['memo'] else '', '있음' if present else '파일 없음']
             for col, val in enumerate(values):
                 item = QTableWidgetItem(str(val))
                 if col == 1:
                     item.setData(Qt.ItemDataRole.UserRole, rec['video_id'])
-                if col in (4, 7):
+                if col in (4, 8):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 if col == 0:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                item.setToolTip(str(media_path(rec['file_path'])) if col == 10 else
-                                (rec['tags'] if col in (5, 6) and rec['tags'] else str(val)))
+                if col == 5 and youtube_link:
+                    item.setData(Qt.ItemDataRole.UserRole, youtube_link)
+                    item.setForeground(QColor('#1674c5'))
+                    font = item.font()
+                    font.setUnderline(True)
+                    item.setFont(font)
+                item.setToolTip(str(media_path(rec['file_path'])) if col == 11 else
+                                ('클릭하면 웹 브라우저로 열립니다.\n' + youtube_link if col == 5 and youtube_link else
+                                 (rec['tags'] if col in (6, 7) and rec['tags'] else str(val))))
                 table.setItem(row_idx, col, item)
             if rec['video_id'] == self.current_id:
                 selected_row = row_idx
@@ -2349,6 +2489,7 @@ class MainWindow(QMainWindow):
                 self.add_log('[파일 복구] 누락 영상이 다시 확인되었습니다')
             self._last_missing = missing
         self.statusBar().showMessage(f'라이브러리 {len(visible)}개 표시 / 누락 {len(missing)}개 | DB: {DB_PATH} | 로그: {LOG_PATH.parent}')
+        self.update_storage_summary()
 
     def on_video_selected(self):
         selected = self.library_table.selectedItems()
@@ -2702,6 +2843,7 @@ class MainWindow(QMainWindow):
             self.find_subtitle_files()
             self.add_log(f'[영상 이동] {path} -> {result} (연관 SRT/info.json 동반 이동)')
             self.refresh_library()
+            self.update_storage_summary(force=True)
         except (OSError, ValueError) as ex:
             self.add_log(f'[영상 이동 오류] {ex}')
             QMessageBox.warning(self, '영상 이동 실패', str(ex))
@@ -2740,6 +2882,7 @@ class MainWindow(QMainWindow):
             self.video_info_label.setText(f"{record['channel']} · {clean_title}")
             self.add_log(f'[한글 제목 변경] {path.name} -> {result.name} (메모 유지)')
             self.refresh_library()
+            self.update_storage_summary(force=True)
         except (OSError, ValueError) as ex:
             self.add_log(f'[제목 변경 오류] {ex}')
             QMessageBox.warning(self, '이름 변경 실패', str(ex))
@@ -2768,6 +2911,7 @@ class MainWindow(QMainWindow):
                 errors.append(str(target))
         self.add_log(f'[휴지통 삭제] {path} (연관 파일 {len(extras)}개, 실패 {len(errors)}개)')
         self.refresh_library()
+        self.update_storage_summary(force=True)
         if errors:
             QMessageBox.warning(self, '일부 파일 휴지통 실패', '\n'.join(errors))
 
