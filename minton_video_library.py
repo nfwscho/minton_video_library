@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-Minton Video Library v1.2 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
+Minton Video Library v1.3 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
 =====================================================================
 [프로그램 전체 기능 및 동작 보존 목록]
 01. Windows Python 3.12 + PySide6 기반 단일 Python 소스 GUI.
@@ -69,6 +69,21 @@ Minton Video Library v1.2 | 배드민턴 유튜브 영상 다운로드 및 관�
 56. SQLite 메모·분류·구간표시 데이터는 파일 스캔/다운로드 시에도 보존.
 57. 이전 라이브러리 DB는 삭제하지 않으며, SQLite 파일 검사 및 WAL 체크포인트 지원.
 
+[V1.3 추가/수정 - V1.2 전체 기능과 GUI 로그/파일 로그 흐름 보존]
+58. 신규 다운로드 시 YouTube 대표 썸네일을 JPG로 같은 폴더에 저장(--write-thumbnail/--convert-thumbnails jpg).
+59. 기존 MP4에서 썸네일만 빠진 경우 이미지 전용 순차 수집(재다운로드 없음), 중단 지원 및 오류 로그.
+60. JPG/PNG/WEBP 썸네일 탐색: 기본 파일명, 영상 ID 일치 기준; 파일 이동·개명·휴지통 처리 유지.
+61. 라이브러리 목록 첫 열에 썸네일 이미지 표시, 보이는 행만 지연 로드하고 메모리 캐시 제한.
+62. 영상 선택 시 큰 썸네일 미리보기와 누락 상태 표시.
+63. Qt 플레이어 오디오 장치 명시, 출력 장치 선택, 음소거 토글·음량 설정 저장.
+64. 영상의 오디오 트랙 자동 선택 및 ffprobe 기반 소리 진단(무음/코덱/출력 장치 문제 구분).
+65. 플레이어의 재생/일시정지를 하나의 토글 버튼으로 통합(■ 정지 버튼은 별도 유지).
+66. 라이브러리 목록에 재생목록명과 재생시간(HH:MM:SS) 컬럼 추가, 열 너비 설정 보존.
+67. 재생목록명/ID를 영상 DB에 저장, 기존 채널/재생목록 경로 및 info.json에서도 복구.
+68. 기존 mp4의 재생시간 메타데이터가 없으면 백그라운드 폴더 검색 시 ffprobe로 보충.
+69. 다운로드/썸네일 작업 상호 충돌 방지, 백필 작업의 디스크 이동/종료 중지 보호.
+70. 기존 V1.0~V1.2 DB, 메모, 분류, 자막, 클립 구간, 경로 및 로그 내용 유지.
+
 [저장 위치]
 - 프로그램: D:\stockproj\minton_video_library\minton_video_library.py (권장)
 - 데이터베이스: 라이브러리루트\_database\library.db (영상과 함께 이동)
@@ -90,11 +105,13 @@ Minton Video Library v1.2 | 배드민턴 유튜브 영상 다운로드 및 관�
 from __future__ import annotations
 
 import bisect
+from collections import OrderedDict
 import hashlib
 import html
 import json
 import logging
 import ntpath
+from pathlib import PurePosixPath
 from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
@@ -108,9 +125,13 @@ import time
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
-from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, QFile
-from PySide6.QtGui import QDesktopServices, QFont
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+# Windows Qt Multimedia 기본 FFmpeg 디코더를 명시하여 백엔드/오디오 호환성 향상.
+# 사용자가 QT_MEDIA_BACKEND를 이미 지정했다면 그 설정을 우선한다.
+os.environ.setdefault('QT_MEDIA_BACKEND', 'ffmpeg')
+
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, QFile, QSize
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPixmap
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QMediaDevices
 from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
@@ -120,7 +141,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QAbstractItemView, QCheckBox, QDialog, QInputDialog, QListWidgetItem,
 )
 
-APP_TITLE = "Minton Video Library v1.2"
+APP_TITLE = "Minton Video Library v1.3"
 APP_DATA = Path(os.getenv("LOCALAPPDATA") or (Path.home() / ".local" / "share")) / "MintonVideoLibrary"
 # DB 경로는 앱 폴더와 분리하여 라이브러리 폴더와 항상 함께 이동한다.
 LEGACY_DB_PATH = APP_DATA / "library.db"
@@ -137,6 +158,7 @@ KOREAN_PLAYLIST_OVERRIDES = {
     'PLX1IndZwkjj0': ('윤이콕TV', '물A조라고 놀리지말아요'),
 }
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
+THUMB_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 # 기술별 체계적 분류. 여러 영역에 걸친 영상은 쉼표 구분 태그를 함께 이용한다.
 BADMINTON_CATEGORIES = {
@@ -346,6 +368,8 @@ def init_db(migrate_old: bool = True) -> None:
             'major_category': "TEXT NOT NULL DEFAULT '미분류'",
             'sub_category': "TEXT NOT NULL DEFAULT '미분류'",
             'tags': "TEXT NOT NULL DEFAULT ''",
+            'playlist_title': "TEXT NOT NULL DEFAULT ''",
+            'playlist_id': "TEXT NOT NULL DEFAULT ''",
         })
         for table, columns in migrations.items():
             existing = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
@@ -365,6 +389,11 @@ def init_db(migrate_old: bool = True) -> None:
         )""")
         db.execute('CREATE INDEX IF NOT EXISTS idx_clip_video ON clip_marks(video_id,id)')
         migrate_file_paths(db)
+        # 과거에 받은 재생목록 영상은 MP4 경로(채널/목록/파일)에서 이름을 보충한다.
+        for row in db.execute("SELECT video_id,file_path FROM videos WHERE playlist_title='' OR playlist_title IS NULL").fetchall():
+            inferred = infer_playlist_name(row['file_path'])
+            if inferred:
+                db.execute('UPDATE videos SET playlist_title=? WHERE video_id=?', (inferred, row['video_id']))
 
 
 
@@ -439,6 +468,73 @@ def playlist_destination(root: Path, job) -> Path | None:
     return root / safe_name(channel, '채널확인필요') / safe_name(playlist, '재생목록')
 
 
+def infer_playlist_name(saved_path: str) -> str:
+    """채널/재생목록/영상.mp4 형태의 상대경로에서 재생목록명을 가져온다."""
+    try:
+        parts = PurePosixPath(str(saved_path).replace('\\', '/')).parts
+        if len(parts) >= 3 and parts[0] not in ('.', '..', '_database'):
+            return parts[-2]
+    except (ValueError, TypeError):
+        pass
+    return ''
+
+
+def find_thumbnail(media: Path) -> Path | None:
+    """영상과 같은 이름 또는 동일 YouTube ID의 썸네일을 찾는다."""
+    if not media.is_file():
+        return None
+    for suffix in THUMB_EXTS:
+        candidate = media.with_suffix(suffix)
+        if candidate.is_file():
+            return candidate
+    match = YT_ID_PATTERN.search(media.stem)
+    if not match:
+        return None
+    try:
+        for path in media.parent.iterdir():
+            if (path.is_file() and path.suffix.lower() in THUMB_EXTS
+                    and path.stem != media.stem and YT_ID_PATTERN.search(path.stem)
+                    and YT_ID_PATTERN.search(path.stem).group(1) == match.group(1)):
+                return path
+    except OSError:
+        pass
+    return None
+
+
+def yt_video_url(source_url: str, video_id: str) -> str:
+    """백필 용도의 YouTube 단일 영상 URL만 허용한다 (외부 URL 차단)."""
+    vid = extract_video_id(str(source_url or ''))
+    if not vid and re.fullmatch(r'[A-Za-z0-9_-]{11}', str(video_id or '')):
+        vid = video_id
+    return f'https://www.youtube.com/watch?v={vid}' if vid else ''
+
+
+def probe_duration_seconds(media: Path) -> int:
+    """info.json 없는 로컬 영상 길이를 ffprobe로 보충. GUI가 아닌 작업자에서 호출."""
+    probe = shutil.which('ffprobe')
+    if not probe or not media.is_file():
+        return 0
+    try:
+        result = subprocess.run(
+            [probe, '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', str(media)],
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            timeout=12, **popen_flags())
+        if result.returncode == 0:
+            return max(0, int(float(result.stdout.strip())))
+    except (ValueError, OSError, subprocess.TimeoutExpired):
+        pass
+    return 0
+
+
+def format_duration(seconds: int | float) -> str:
+    try:
+        n = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        n = 0
+    return f'{n // 3600:02d}:{(n // 60) % 60:02d}:{n % 60:02d}' if n else '--:--:--'
+
+
 def related_sidecars(media: Path) -> list[Path]:
     """영상 이름과 동일한 기본 이름을 가진 자막·메타데이터 파일만 찾는다."""
     suffixes = {'.srt', '.ass', '.vtt', '.lrc', '.json', '.description', '.jpg', '.jpeg', '.webp', '.png'}
@@ -449,6 +545,9 @@ def related_sidecars(media: Path) -> list[Path]:
         exact = {p for p in media.parent.iterdir()
                  if p.is_file() and p.name.startswith(media.stem + '.')
                  and p.suffix.lower() in suffixes}
+        thumbnail = find_thumbnail(media)
+        if thumbnail is not None:
+            exact.add(thumbnail)
         return sorted(exact.union(subtitle_candidates(media)))
     except OSError:
         return []
@@ -527,7 +626,7 @@ def read_info_json(media: Path) -> dict:
     return {}
 
 
-def local_video_record(path: Path) -> dict:
+def local_video_record(path: Path, probe_duration: bool = False) -> dict:
     info = read_info_json(path)
     id_match = YT_ID_PATTERN.search(path.stem)
     file_id = (info.get("id") or (id_match.group(1) if id_match else ""))
@@ -535,6 +634,11 @@ def local_video_record(path: Path) -> dict:
         file_id = "local:" + hashlib.sha1(root_relative(path).casefold().encode("utf-8")).hexdigest()
     title = info.get("title") or path.stem
     channel = info.get("channel") or path.parent.name
+    relative_parts = PurePosixPath(root_relative(path)).parts
+    # 재생목록 폴더의 채널명이 이미 한국어인데 YouTube 메타데이터가
+    # 영문 이름으로 회귀하면 기존에 지정한 한국어 폴더명을 우선한다.
+    if relative_parts and re.search(r'[가-힣]', relative_parts[0]) and not re.search(r'[가-힣]', str(channel)):
+        channel = relative_parts[0]
     upload_date = str(info.get("upload_date") or "")
     if len(upload_date) == 8 and upload_date.isdigit():
         upload_date = upload_date[:4] + "-" + upload_date[4:6] + "-" + upload_date[6:]
@@ -542,10 +646,20 @@ def local_video_record(path: Path) -> dict:
         match = re.search(r"(\d{4}-\d{2}-\d{2})$", path.stem)
         upload_date = match.group(1) if match else ""
     # 목록 폴더가 있을 때 채널명은 info.json의 원본 채널을 우선 사용한다.
+    duration_raw = info.get('duration') or 0
+    try:
+        duration = max(0, int(float(duration_raw)))
+    except (TypeError, ValueError):
+        duration = 0
+    if not duration and probe_duration:
+        duration = probe_duration_seconds(path)
+    relative = root_relative(path)
+    playlist_name = infer_playlist_name(relative) or str(info.get('playlist_title') or info.get('playlist') or '')
     return dict(video_id=str(file_id), title=str(title), channel=str(channel),
-                upload_date=upload_date, duration=int(info.get("duration") or 0),
-                file_path=root_relative(path), source_url=str(info.get("webpage_url") or ""),
-                file_size=path.stat().st_size)
+                upload_date=upload_date, duration=duration,
+                file_path=relative, source_url=str(info.get("webpage_url") or ""),
+                file_size=path.stat().st_size, playlist_title=playlist_name,
+                playlist_id=str(info.get('playlist_id') or ''))
 
 
 def upsert_video(db: sqlite3.Connection, data: dict) -> str:
@@ -570,17 +684,21 @@ def upsert_video(db: sqlite3.Connection, data: dict) -> str:
                             missing[0]['file_path'], data['file_path'])
     with db:
         db.execute("""
-        INSERT INTO videos(video_id,title,channel,upload_date,duration,file_path,source_url,file_size,updated_at)
-        VALUES(:video_id,:title,:channel,:upload_date,:duration,:file_path,:source_url,:file_size,:updated_at)
+        INSERT INTO videos(video_id,title,channel,upload_date,duration,file_path,source_url,file_size,
+                           playlist_title,playlist_id,updated_at)
+        VALUES(:video_id,:title,:channel,:upload_date,:duration,:file_path,:source_url,:file_size,
+               :playlist_title,:playlist_id,:updated_at)
         ON CONFLICT(video_id) DO UPDATE SET
             title=excluded.title, channel=excluded.channel,
             upload_date=CASE WHEN excluded.upload_date<>'' THEN excluded.upload_date ELSE videos.upload_date END,
             duration=CASE WHEN excluded.duration>0 THEN excluded.duration ELSE videos.duration END,
             file_path=excluded.file_path,
             file_size=excluded.file_size,
+            playlist_title=CASE WHEN excluded.playlist_title<>'' THEN excluded.playlist_title ELSE videos.playlist_title END,
+            playlist_id=CASE WHEN excluded.playlist_id<>'' THEN excluded.playlist_id ELSE videos.playlist_id END,
             source_url=CASE WHEN excluded.source_url<>'' THEN excluded.source_url ELSE videos.source_url END,
             updated_at=excluded.updated_at
-        """, {**data, "updated_at": now_str()})
+        """, {**{'playlist_title': '', 'playlist_id': ''}, **data, "updated_at": now_str()})
     return str(data['video_id'])
 
 
@@ -799,6 +917,10 @@ class DownloadWorker(QThread):
                         self._emit(f'[기존 영상 재분류 보류] {ex}; 파일 이동 버튼으로 처리하세요')
                 else:
                     self._emit(f'[중복 생략] {url}')
+                if job['playlist_title']:
+                    with db:
+                        db.execute('UPDATE videos SET playlist_title=?,playlist_id=?,updated_at=? WHERE video_id=?',
+                                   (job['playlist_title'], job['playlist_id'], now_str(), video_id))
                 self._update_job(db, job['id'], 'done', '이미 라이브러리에 존재', 100)
                 return
         self.activity.emit(f"다운로드 중: {job['title'] or url}")
@@ -814,6 +936,7 @@ class DownloadWorker(QThread):
                "-f", FORMAT_SELECTOR, "--merge-output-format", "mp4",
                "--write-subs", "--write-auto-subs", "--sub-langs", "ko.*",
                "--convert-subs", "srt", "--write-info-json", "--no-write-playlist-metafiles",
+               "--write-thumbnail", "--convert-thumbnails", "jpg",
                "-P", str(dest if dest else self.root),
                "-o", file_template,
                "--print", "after_move:__MINTON_FILE__%(filepath)s",
@@ -893,7 +1016,13 @@ class DownloadWorker(QThread):
                 data['channel'] = job['channel_override']
             if info.get("ID"):
                 data["video_id"] = info["ID"]
+            data['playlist_title'] = job['playlist_title'] or data['playlist_title']
+            data['playlist_id'] = job['playlist_id'] or data['playlist_id']
             upsert_video(db, data)
+            if find_thumbnail(media_path):
+                self._emit(f'[썸네일 저장] {find_thumbnail(media_path)}')
+            else:
+                self._emit(f'[썸네일 누락] {media_path.name}: 나중에 누락 썸네일 받기 가능')
             self._update_job(db, job["id"], "done", "", 100)
             self._emit(f"[다운로드 완료] {media_path}")
         except Exception as ex:
@@ -947,13 +1076,106 @@ class DownloadWorker(QThread):
             self.changed.emit()
 
 
+class ThumbnailWorker(QThread):
+    """기존 MP4 썸네일 누락분만 yt-dlp --skip-download로 순차 수집."""
+    message = Signal(str)
+    changed = Signal()
+    progress_signal = Signal(int, int, int)  # 처리 완료, 대상 수, 성공 수
+
+    def __init__(self, root: Path, tasks: list[tuple[Path, str, str]], interval=3, parent=None):
+        super().__init__(parent)
+        self.root = Path(root)
+        self.tasks = tasks
+        self.interval = max(0, int(interval))
+        self._stop = threading.Event()
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+
+    def request_stop(self):
+        self._stop.set()
+        with self._lock:
+            process = self._proc
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+
+    def run(self):
+        base = yt_command()
+        if not base:
+            self.message.emit('[썸네일 오류] yt-dlp가 설치되어 있지 않습니다')
+            return
+        completed = ok = skipped = 0
+        self.message.emit(f'[썸네일 일괄 받기] 누락 대상 {len(self.tasks)}개, 요청 간격 {self.interval}초')
+        for media, source_url, video_id in self.tasks:
+            if self._stop.is_set():
+                break
+            if not media.is_file() or not is_in_directory(media, self.root):
+                skipped += 1
+                self.message.emit(f'[썸네일 건너뜀] 영상 파일 누락/루트 밖: {media}')
+            elif find_thumbnail(media):
+                skipped += 1
+            else:
+                url = yt_video_url(source_url, video_id)
+                if not url:
+                    skipped += 1
+                    self.message.emit(f'[썸네일 건너뜀] YouTube 영상 ID가 없는 로컬 파일: {media.name}')
+                else:
+                    # 실제 MP4가 없는 경우에만 콘텐츠를 생성하는 안전한 이미지-only 호출.
+                    cmd = [*base, '--ignore-config', '--js-runtimes', 'deno',
+                           '--remote-components', 'ejs:npm', '--extractor-args', 'youtube:lang=ko',
+                           '--no-color', '--socket-timeout', '25', '--retries', '3',
+                           '--extractor-retries', '2', '--no-playlist', '--skip-download',
+                           '--write-thumbnail', '--convert-thumbnails', 'jpg',
+                           '--no-write-info-json', '--no-write-subs', '--no-write-auto-subs',
+                           '--no-write-playlist-metafiles', '-P', str(media.parent),
+                           '-o', media.stem.replace('%', '%%') + '.%(ext)s', url]
+                    env = {**os.environ, 'PYTHONIOENCODING': 'utf-8', 'PYTHONUTF8': '1'}
+                    try:
+                        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                text=True, encoding='utf-8', errors='replace',
+                                                env=env, **popen_flags())
+                        with self._lock:
+                            self._proc = proc
+                        try:
+                            output, _ = proc.communicate(timeout=180)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            output, _ = proc.communicate()
+                            self.message.emit(f'[썸네일 시간 초과] {media.name}')
+                        finally:
+                            with self._lock:
+                                self._proc = None
+                        if find_thumbnail(media):
+                            ok += 1
+                            self.message.emit(f'[썸네일 저장] {media.name} -> {find_thumbnail(media).name}')
+                            self.changed.emit()
+                        else:
+                            self.message.emit(f'[썸네일 실패] {media.name} / 종료코드 {proc.returncode}: '
+                                              f'{output[-450:].strip()}')
+                    except (OSError, ValueError) as ex:
+                        self.message.emit(f'[썸네일 오류] {media.name}: {ex}')
+            completed += 1
+            self.progress_signal.emit(completed, len(self.tasks), ok)
+            if self._stop.is_set():
+                break
+            if completed < len(self.tasks) and self.interval:
+                if self._stop.wait(self.interval):
+                    break
+        self.message.emit(f'[썸네일 작업 종료] 성공 {ok}개, 건너뜀 {skipped}개, '
+                          f'처리 {completed}/{len(self.tasks)}개' + (' (사용자 중단)' if self._stop.is_set() else ''))
+        self.changed.emit()
+
+
 class ScanWorker(QThread):
     finished_scan = Signal(list)
     message = Signal(str)
 
-    def __init__(self, root: str, parent=None):
+    def __init__(self, root: str, known_durations: dict[str, int] | None = None, parent=None):
         super().__init__(parent)
         self.root = Path(root)
+        self.known_durations = known_durations or {}
 
     def run(self):
         results = []
@@ -964,7 +1186,12 @@ class ScanWorker(QThread):
                     for name in filenames:
                         path = Path(directory) / name
                         if path.suffix.lower() in VIDEO_EXTS:
-                            results.append(local_video_record(path))
+                            rel = root_relative(path)
+                            known = self.known_durations.get(rel, 0)
+                            record = local_video_record(path, probe_duration=(not known))
+                            if not record['duration'] and known:
+                                record['duration'] = known
+                            results.append(record)
             self.finished_scan.emit(results)
         except Exception as ex:
             self.message.emit(f"[폴더 검색 오류] {ex}")
@@ -978,6 +1205,12 @@ class MainWindow(QMainWindow):
         self.db = connect_db()
         self.worker: DownloadWorker | None = None
         self.scanner: ScanWorker | None = None
+        self.thumbnail_worker: ThumbnailWorker | None = None
+        self._thumbnail_cache: OrderedDict[str, tuple[int, QIcon]] = OrderedDict()
+        self._row_thumbnail_paths: list[Path | None] = []
+        self._thumbnail_visible_timer = QTimer(self)
+        self._thumbnail_visible_timer.setSingleShot(True)
+        self._thumbnail_visible_timer.timeout.connect(self.refresh_visible_thumbnails)
         self.current_id: str | None = None
         self.current_path: Path | None = None
         self.subtitles: list[tuple[int, int, str]] = []
@@ -994,6 +1227,8 @@ class MainWindow(QMainWindow):
         self._segment_end: int | None = None
         self._build_ui()
         self._load_settings()
+        self.setup_audio_devices()
+        self.update_play_button()
         self.refresh_jobs()
         self.refresh_library()
         QTimer.singleShot(500, self.scan_library)
@@ -1134,6 +1369,14 @@ class MainWindow(QMainWindow):
         self.category_filter.addItems(['전체 분류', *BADMINTON_CATEGORIES.keys()])
         self.category_filter.currentIndexChanged.connect(self.refresh_library)
         lib_bar.addWidget(self.category_filter)
+        self.thumbnail_btn = QPushButton('누락 썸네일 받기')
+        self.thumbnail_btn.setToolTip('기존 영상은 다시 받지 않고 누락된 JPG 썸네일만 3초 간격으로 내려받습니다.')
+        self.thumbnail_btn.clicked.connect(self.start_thumbnail_backfill)
+        lib_bar.addWidget(self.thumbnail_btn)
+        self.thumbnail_stop_btn = QPushButton('썸네일 중단')
+        self.thumbnail_stop_btn.clicked.connect(self.stop_thumbnail_backfill)
+        self.thumbnail_stop_btn.setEnabled(False)
+        lib_bar.addWidget(self.thumbnail_stop_btn)
         scan_btn = QPushButton('폴더 다시 검색')
         scan_btn.clicked.connect(lambda: self.scan_library(auto=False))
         lib_bar.addWidget(scan_btn)
@@ -1150,9 +1393,10 @@ class MainWindow(QMainWindow):
             manage_bar.addWidget(button)
         manage_bar.addStretch()
         ll.addLayout(manage_bar)
-        self.library_table = QTableWidget(0, 8)
+        self.library_table = QTableWidget(0, 11)
         self.library_table.setHorizontalHeaderLabels(
-            ["제목", "채널", "대분류", "세부분류", "크기", "업로드일", "메모", "파일"])
+            ["썸네일", "제목", "채널", "재생목록", "재생시간", "대분류", "세부분류",
+             "크기", "업로드일", "메모", "파일"])
         self.library_table.verticalHeader().setVisible(False)
         self.library_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.library_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1161,9 +1405,12 @@ class MainWindow(QMainWindow):
         self.library_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.library_table.horizontalHeader().setStretchLastSection(False)
         self.library_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.library_table.setColumnWidth(0, 310)
-        for i, width in enumerate((310, 115, 130, 145, 90, 105, 55, 100)):
+        self.library_table.setIconSize(QSize(112, 64))
+        self.library_table.verticalHeader().setDefaultSectionSize(72)
+        for i, width in enumerate((130, 310, 115, 180, 90, 130, 145, 90, 105, 55, 100)):
             self.library_table.setColumnWidth(i, width)
+        self.library_table.verticalScrollBar().valueChanged.connect(self.schedule_visible_thumbnails)
+        self.library_table.horizontalScrollBar().valueChanged.connect(self.schedule_visible_thumbnails)
         self.library_table.itemSelectionChanged.connect(self.on_video_selected)
         self.library_table.cellDoubleClicked.connect(lambda _r, _c: self.play_current())
         ll.addWidget(self.library_table)
@@ -1172,9 +1419,16 @@ class MainWindow(QMainWindow):
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(4, 0, 0, 0)
+        info_row = QHBoxLayout()
+        self.preview_thumb = QLabel('썸네일 없음')
+        self.preview_thumb.setFixedSize(170, 96)
+        self.preview_thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_thumb.setStyleSheet('background:#242424;color:#bdbdbd;border:1px solid #666;')
+        info_row.addWidget(self.preview_thumb)
         self.video_info_label = QLabel("라이브러리에서 영상을 선택하세요")
         self.video_info_label.setWordWrap(True)
-        rl.addWidget(self.video_info_label)
+        info_row.addWidget(self.video_info_label, 1)
+        rl.addLayout(info_row)
         self.video_widget = QVideoWidget()
         self.video_widget.setMinimumHeight(215)
         rl.addWidget(self.video_widget, 3)
@@ -1182,7 +1436,9 @@ class MainWindow(QMainWindow):
         self.audio = QAudioOutput(self)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video_widget)
+        self.audio.setMuted(False)
         self.audio.setVolume(0.7)
+        self.player.tracksChanged.connect(self.ensure_audio_track)
         self.player.positionChanged.connect(self.on_position)
         self.player.durationChanged.connect(self.on_duration)
         self.player.errorOccurred.connect(self.on_player_error)
@@ -1194,11 +1450,14 @@ class MainWindow(QMainWindow):
         self.subtitle_now.setMinimumHeight(42)
         rl.addWidget(self.subtitle_now)
         controls = QHBoxLayout()
-        for name, callback in (("▶", self.play_current), ("Ⅱ", self.player.pause), ("■", self.player.stop)):
-            btn = QPushButton(name)
-            btn.setMaximumWidth(43)
-            btn.clicked.connect(callback)
-            controls.addWidget(btn)
+        self.play_pause_btn = QPushButton('▶ 재생')
+        self.play_pause_btn.setToolTip('재생 중에는 일시정지, 일시정지 중에는 재생')
+        self.play_pause_btn.clicked.connect(self.toggle_play_pause)
+        controls.addWidget(self.play_pause_btn)
+        stop_play_btn = QPushButton('■ 정지')
+        stop_play_btn.clicked.connect(self.player.stop)
+        controls.addWidget(stop_play_btn)
+        self.player.playbackStateChanged.connect(self.update_play_button)
         self.time_slider = QSlider(Qt.Orientation.Horizontal)
         self.time_slider.setRange(0, 0)
         self.time_slider.sliderPressed.connect(lambda: setattr(self, "_seeking", True))
@@ -1220,12 +1479,30 @@ class MainWindow(QMainWindow):
         folder_btn.clicked.connect(self.open_media_folder)
         external_row.addWidget(folder_btn)
         external_row.addWidget(QLabel("음량"))
-        volume = QSlider(Qt.Orientation.Horizontal)
-        volume.setRange(0, 100)
-        volume.setValue(70)
-        volume.valueChanged.connect(lambda n: self.audio.setVolume(n / 100))
-        external_row.addWidget(volume)
+        self.mute_btn = QPushButton('🔊')
+        self.mute_btn.setToolTip('음소거 켜기/끄기')
+        self.mute_btn.clicked.connect(self.toggle_mute)
+        external_row.addWidget(self.mute_btn)
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(70)
+        self.volume_slider.valueChanged.connect(self.change_volume)
+        external_row.addWidget(self.volume_slider)
         rl.addLayout(external_row)
+        audio_row = QHBoxLayout()
+        audio_row.addWidget(QLabel('소리 출력 장치'))
+        self.audio_device_combo = QComboBox()
+        self.audio_device_combo.setMinimumWidth(150)
+        self.audio_device_combo.setToolTip('소리가 나오지 않으면 스피커/헤드셋 출력 장치를 직접 선택하세요.')
+        self.audio_device_combo.currentIndexChanged.connect(self.change_audio_device)
+        audio_row.addWidget(self.audio_device_combo, 1)
+        refresh_audio_btn = QPushButton('장치 새로고침')
+        refresh_audio_btn.clicked.connect(self.setup_audio_devices)
+        audio_row.addWidget(refresh_audio_btn)
+        audio_diag_btn = QPushButton('소리 진단')
+        audio_diag_btn.clicked.connect(self.diagnose_audio)
+        audio_row.addWidget(audio_diag_btn)
+        rl.addLayout(audio_row)
         tabs = QTabWidget()
         memo_tab = QWidget()
         ml = QVBoxLayout(memo_tab)
@@ -1338,6 +1615,9 @@ class MainWindow(QMainWindow):
     def _load_settings(self):
         self.root_input.setText(str(ACTIVE_ROOT))
         self.interval_spin.setValue(int(get_setting(self.db, "interval", "20")))
+        self.volume_slider.setValue(max(0, min(100, int(get_setting(self.db, 'audio_volume', '70')))))
+        self.audio.setMuted(get_setting(self.db, 'audio_muted', '0') == '1')
+        self.mute_btn.setText('🔇' if self.audio.isMuted() else '🔊')
         try:
             sizes = json.loads(get_setting(self.db, "split_outer", "[]"))
             if len(sizes) == 3:
@@ -1351,6 +1631,10 @@ class MainWindow(QMainWindow):
                            (self.jobs_table, 'jobs_col_widths')):
             try:
                 sizes = json.loads(get_setting(self.db, key, '[]'))
+                if table is self.library_table and len(sizes) == 8:
+                    # V1.2 제목/채널/분류/크기/업로드일/메모/파일 컬럼 이동
+                    sizes = [130, sizes[0], sizes[1], 180, 90, sizes[2], sizes[3],
+                             sizes[4], sizes[5], sizes[6], sizes[7]]
                 if len(sizes) == table.columnCount():
                     for i, n in enumerate(sizes):
                         table.setColumnWidth(i, max(45, min(2000, int(n))))
@@ -1363,9 +1647,13 @@ class MainWindow(QMainWindow):
         # 선택된 루트는 파일 경로 힌트와 DB 모두에서 일치해야 한다.
         set_setting(self.db, "download_root", str(ACTIVE_ROOT))
         set_setting(self.db, "interval", str(self.interval_spin.value()))
+        if hasattr(self, 'volume_slider'):
+            set_setting(self.db, 'audio_volume', str(self.volume_slider.value()))
+            set_setting(self.db, 'audio_muted', '1' if self.audio.isMuted() else '0')
 
     def browse_folder(self):
-        if (self.worker and self.worker.isRunning()) or (self.scanner and self.scanner.isRunning()):
+        if ((self.worker and self.worker.isRunning()) or (self.scanner and self.scanner.isRunning())
+                or (self.thumbnail_worker and self.thumbnail_worker.isRunning())):
             QMessageBox.warning(self, '라이브러리 변경', '다운로드/검색 작업 종료 후 라이브러리 위치를 변경하세요.')
             return
         folder = QFileDialog.getExistingDirectory(self, '이동한 minton.youtube 루트 폴더 선택',
@@ -1409,6 +1697,9 @@ class MainWindow(QMainWindow):
         self.current_id = None
         self.current_path = None
         self._last_missing.clear()
+        self._thumbnail_cache.clear()
+        self._row_thumbnail_paths.clear()
+        self.update_thumbnail_preview()
         self.root_input.setText(str(ACTIVE_ROOT))
         self.memo_edit.clear()
         self.tags_edit.clear()
@@ -1423,6 +1714,210 @@ class MainWindow(QMainWindow):
         LOGGER.info(message)
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_box.appendPlainText(f"[{timestamp}] {message}")
+
+    def setup_audio_devices(self):
+        """Windows 기본 출력과 실제 사운드 장치를 열거한다."""
+        previous = get_setting(self.db, 'audio_device_id', '')
+        self.audio_device_combo.blockSignals(True)
+        self.audio_device_combo.clear()
+        devices = QMediaDevices.audioOutputs()
+        self._audio_devices = devices
+        for device in devices:
+            device_id = bytes(device.id()).hex()
+            self.audio_device_combo.addItem(device.description(), device_id)
+        index = self.audio_device_combo.findData(previous) if previous else -1
+        if index < 0 and devices:
+            default_device = QMediaDevices.defaultAudioOutput()
+            default_id = bytes(default_device.id()).hex()
+            index = self.audio_device_combo.findData(default_id)
+        if devices:
+            self.audio_device_combo.setCurrentIndex(max(0, index))
+            self.audio.setDevice(devices[self.audio_device_combo.currentIndex()])
+            self.add_log('[오디오 장치] ' + self.audio.device().description())
+        else:
+            self.add_log('[오디오 경고] Qt에서 사용 가능한 오디오 출력 장치를 찾지 못했습니다')
+        self.audio_device_combo.blockSignals(False)
+
+    def change_audio_device(self, idx):
+        if 0 <= idx < len(getattr(self, '_audio_devices', [])):
+            device = self._audio_devices[idx]
+            self.audio.setDevice(device)
+            set_setting(self.db, 'audio_device_id', bytes(device.id()).hex())
+            self.add_log(f'[오디오 출력 변경] {device.description()}')
+            if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self.player.play()
+
+    def change_volume(self, value):
+        self.audio.setVolume(max(0.0, min(1.0, value / 100)))
+        if value and self.audio.isMuted():
+            self.audio.setMuted(False)
+            self.mute_btn.setText('🔊')
+        if hasattr(self, 'db'):
+            set_setting(self.db, 'audio_volume', str(value))
+            set_setting(self.db, 'audio_muted', '1' if self.audio.isMuted() else '0')
+
+    def toggle_mute(self):
+        self.audio.setMuted(not self.audio.isMuted())
+        self.mute_btn.setText('🔇' if self.audio.isMuted() else '🔊')
+        set_setting(self.db, 'audio_muted', '1' if self.audio.isMuted() else '0')
+        self.add_log('[오디오 음소거] ' + ('켜짐' if self.audio.isMuted() else '해제'))
+
+    def ensure_audio_track(self):
+        tracks = self.player.audioTracks()
+        if tracks and self.player.activeAudioTrack() < 0:
+            self.player.setActiveAudioTrack(0)
+            self.add_log(f'[오디오 트랙 선택] 1/{len(tracks)}')
+
+    def diagnose_audio(self):
+        """무음 문제를 구분해 로그와 팝업에 표시한다. 영상 자체는 건드리지 않는다."""
+        track_count = len(self.player.audioTracks())
+        active = self.player.activeAudioTrack()
+        device_name = self.audio.device().description()
+        details = [f'현재 출력 장치: {device_name or "없음"}',
+                   f'Qt 감지 오디오 트랙: {track_count}개 / 선택: {active}',
+                   f'음량: {int(self.audio.volume() * 100)}% / 음소거: {self.audio.isMuted()}',
+                   f'Qt 미디어 상태: {self.player.mediaStatus().name}',
+                   f'Qt 오류: {self.player.errorString() or "없음"}']
+        if self.current_path and self.current_path.is_file() and shutil.which('ffprobe'):
+            try:
+                result = subprocess.run(
+                    ['ffprobe', '-v', 'error', '-select_streams', 'a',
+                     '-show_entries', 'stream=codec_name,channels,sample_rate',
+                     '-of', 'json', str(self.current_path)], capture_output=True, text=True,
+                    encoding='utf-8', errors='replace', timeout=12, **popen_flags())
+                streams = json.loads(result.stdout or '{}').get('streams', []) if result.returncode == 0 else []
+                if streams:
+                    details.append('ffprobe 오디오: ' + ', '.join(
+                        f"{t.get('codec_name', '?')} {t.get('channels', '?')}채널" for t in streams))
+                else:
+                    details.append('ffprobe 오디오 트랙: 없음 (원본에 소리가 없을 수 있음)')
+            except (OSError, subprocess.TimeoutExpired, ValueError) as ex:
+                details.append(f'ffprobe 진단 실패: {ex}')
+        details.append('조치: 음소거 해제 → 음량 올리기 → 다른 출력 장치 선택 → Windows 볼륨 믹서 확인')
+        if track_count == 0:
+            details.append('MP4에 음성이 있지만 Qt 트랙이 0개라면 PySide6 업데이트/FFmpeg 백엔드를 점검하세요.')
+        self.add_log('[소리 진단] ' + ' | '.join(details))
+        QMessageBox.information(self, '영상 소리 진단', '\n'.join(details))
+
+    def toggle_play_pause(self):
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.player.pause()
+        else:
+            self.play_current()
+
+    def update_play_button(self, _state=None):
+        playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        self.play_pause_btn.setText('Ⅱ 일시정지' if playing else '▶ 재생')
+        self.play_pause_btn.setToolTip('재생 일시정지' if playing else '재생 또는 이어서 재생')
+
+    def schedule_visible_thumbnails(self, _value=None):
+        self._thumbnail_visible_timer.start(70)
+
+    def cached_thumbnail_icon(self, path: Path) -> QIcon | None:
+        try:
+            stat = path.stat()
+            key = str(path)
+            cached = self._thumbnail_cache.get(key)
+            if cached and cached[0] == stat.st_mtime_ns:
+                self._thumbnail_cache.move_to_end(key)
+                return cached[1]
+            pixmap = QPixmap(str(path))
+            if pixmap.isNull():
+                return None
+            icon = QIcon(pixmap.scaled(112, 64, Qt.AspectRatioMode.KeepAspectRatio,
+                                      Qt.TransformationMode.SmoothTransformation))
+            self._thumbnail_cache[key] = (stat.st_mtime_ns, icon)
+            self._thumbnail_cache.move_to_end(key)
+            while len(self._thumbnail_cache) > 160:
+                self._thumbnail_cache.popitem(last=False)
+            return icon
+        except OSError:
+            return None
+
+    def refresh_visible_thumbnails(self):
+        table = self.library_table
+        if not self._row_thumbnail_paths or not table.rowCount():
+            return
+        first = max(0, table.rowAt(0))
+        last = table.rowAt(max(0, table.viewport().height() - 1))
+        if last < 0:
+            last = min(table.rowCount() - 1, first + 15)
+        for row_idx in range(max(0, first - 2), min(len(self._row_thumbnail_paths), last + 3)):
+            path = self._row_thumbnail_paths[row_idx]
+            item = table.item(row_idx, 0)
+            if item is None:
+                continue
+            if path and path.is_file():
+                icon = self.cached_thumbnail_icon(path)
+                if icon:
+                    item.setIcon(icon)
+                    item.setText('')
+                    item.setToolTip(str(path))
+
+    def update_thumbnail_preview(self):
+        self.preview_thumb.setPixmap(QPixmap())
+        self.preview_thumb.setText('썸네일 없음')
+        if not self.current_path or not self.current_path.is_file():
+            return
+        path = find_thumbnail(self.current_path)
+        if not path:
+            return
+        pixmap = QPixmap(str(path))
+        if not pixmap.isNull():
+            self.preview_thumb.setText('')
+            self.preview_thumb.setPixmap(pixmap.scaled(self.preview_thumb.size(),
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def start_thumbnail_backfill(self):
+        if (self.worker and self.worker.isRunning()) or (self.thumbnail_worker and self.thumbnail_worker.isRunning()):
+            QMessageBox.information(self, '작업 진행 중', '영상 다운로드 또는 썸네일 작업이 끝난 뒤 실행하세요.')
+            return
+        tasks = []
+        for rec in self.db.execute('SELECT video_id,source_url,file_path FROM videos ORDER BY channel,title'):
+            try:
+                media = media_path(rec['file_path'])
+                if media.is_file() and is_in_directory(media, ACTIVE_ROOT) and not find_thumbnail(media):
+                    tasks.append((media, rec['source_url'], rec['video_id']))
+            except (OSError, ValueError) as ex:
+                self.add_log(f'[썸네일 경로 건너뜀] {ex}')
+        if not tasks:
+            QMessageBox.information(self, '썸네일 확인', '누락된 썸네일이 없습니다.')
+            return
+        runnable = sum(bool(yt_video_url(url, vid)) for _, url, vid in tasks)
+        if QMessageBox.question(self, '누락 썸네일 다운로드',
+            f'누락된 썸네일 {len(tasks)}개 중 YouTube 주소가 확인된 {runnable}개를 이미지 전용으로 받습니다.\n'
+            'MP4는 다시 다운로드하지 않으며, 영상마다 최소 3초 간격을 둡니다.\n계속할까요?') != QMessageBox.StandardButton.Yes:
+            return
+        self.thumbnail_worker = ThumbnailWorker(ACTIVE_ROOT, tasks, interval=3, parent=self)
+        self.thumbnail_worker.message.connect(self.add_log)
+        self.thumbnail_worker.progress_signal.connect(self.on_thumbnail_progress)
+        self.thumbnail_worker.changed.connect(self.on_thumbnail_changed)
+        self.thumbnail_worker.finished.connect(self.on_thumbnail_finished)
+        self.thumbnail_btn.setEnabled(False)
+        self.thumbnail_stop_btn.setEnabled(True)
+        self.browse_btn.setEnabled(False)
+        self.add_log(f'[누락 썸네일 다운로드 요청] 대상 {len(tasks)}개 / YouTube 주소 {runnable}개')
+        self.thumbnail_worker.start()
+
+    def on_thumbnail_progress(self, completed, total, ok):
+        self.statusBar().showMessage(f'썸네일 수집 {completed}/{total} · 성공 {ok}개')
+
+    def on_thumbnail_changed(self):
+        self._thumbnail_cache.clear()
+        self.refresh_library()
+        self.update_thumbnail_preview()
+
+    def stop_thumbnail_backfill(self):
+        if self.thumbnail_worker and self.thumbnail_worker.isRunning():
+            self.thumbnail_worker.request_stop()
+            self.add_log('[썸네일 중단 요청] 현재 이미지 작업을 중단합니다')
+
+    def on_thumbnail_finished(self):
+        self.thumbnail_btn.setEnabled(True)
+        self.thumbnail_stop_btn.setEnabled(False)
+        self.browse_btn.setEnabled(True)
+        self.on_thumbnail_changed()
+        self.add_log('[썸네일 작업자 종료] 기존 MP4/메모는 변경하지 않았습니다')
 
     def add_urls(self):
         candidates = re.findall(r"https?://[^\s<>\"']+", self.url_edit.toPlainText())
@@ -1535,6 +2030,9 @@ class MainWindow(QMainWindow):
                 break
 
     def start_download(self):
+        if self.thumbnail_worker and self.thumbnail_worker.isRunning():
+            QMessageBox.information(self, '썸네일 작업 중', '누락 썸네일 작업을 중단하거나 끝낸 뒤 다운로드하세요.')
+            return
         if self.worker and self.worker.isRunning():
             self.worker.request_resume()
             self.add_log("[재개] 현재 작업부터 진행")
@@ -1587,6 +2085,7 @@ class MainWindow(QMainWindow):
     def on_worker_changed(self):
         self.refresh_jobs()
         self.refresh_library()
+        self.update_thumbnail_preview()
 
     def on_worker_finished(self):
         self.root_input.setEnabled(True)
@@ -1604,7 +2103,9 @@ class MainWindow(QMainWindow):
         root = self.root_input.text().strip()
         if not root:
             return
-        self.scanner = ScanWorker(root, self)
+        known_durations = {r['file_path']: int(r['duration'] or 0) for r in
+                           self.db.execute('SELECT file_path,duration FROM videos WHERE duration>0')}
+        self.scanner = ScanWorker(root, known_durations, self)
         self.scanner.message.connect(self.add_log)
         self.scanner.finished_scan.connect(lambda records: self.on_scan_finished(records, auto))
         self.scanner.start()
@@ -1627,6 +2128,7 @@ class MainWindow(QMainWindow):
                     self.player.stop()
                     self.player.setSource(QUrl.fromLocalFile(str(self.current_path)))
                     self.find_subtitle_files()
+                    self.update_thumbnail_preview()
                     self.add_log(f'[현재 영상 경로 연결] {self.current_path}')
             except (sqlite3.Error, OSError) as ex:
                 self.add_log(f"[색인 오류] {record.get('file_path','')}: {ex}")
@@ -1661,7 +2163,7 @@ class MainWindow(QMainWindow):
             filters += ' AND major_category=?'
             params.append(category)
         rows = self.db.execute(f"""SELECT video_id,title,title_override,channel,upload_date,memo,file_path,
-            file_size,major_category,sub_category,tags
+            file_size,major_category,sub_category,tags,playlist_title,duration
             FROM videos {filters} ORDER BY upload_date DESC,title LIMIT 10000""", params).fetchall()
         table = self.library_table
         table.blockSignals(True)
@@ -1681,26 +2183,34 @@ class MainWindow(QMainWindow):
                     continue
             visible.append((rec, present, bytes_used))
         table.setRowCount(len(visible))
+        self._row_thumbnail_paths = []
         selected_row = -1
         for row_idx, (rec, present, bytes_used) in enumerate(visible):
             title = rec['title_override'] or rec['title']
-            values = [title, rec['channel'], rec['major_category'], rec['sub_category'],
+            thumb = find_thumbnail(media_path(rec['file_path'])) if present else None
+            self._row_thumbnail_paths.append(thumb)
+            values = ['썸네일 없음' if not thumb else '', title, rec['channel'],
+                      rec['playlist_title'] or infer_playlist_name(rec['file_path']),
+                      format_duration(rec['duration']), rec['major_category'], rec['sub_category'],
                       format_size(bytes_used), rec['upload_date'],
                       '●' if rec['memo'] else '', '있음' if present else '파일 없음']
             for col, val in enumerate(values):
                 item = QTableWidgetItem(str(val))
-                if col == 0:
+                if col == 1:
                     item.setData(Qt.ItemDataRole.UserRole, rec['video_id'])
-                if col == 4:
+                if col in (4, 7):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                item.setToolTip(str(media_path(rec['file_path'])) if col == 7 else
-                                (rec['tags'] if col in (2, 3) and rec['tags'] else str(val)))
+                if col == 0:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                item.setToolTip(str(media_path(rec['file_path'])) if col == 10 else
+                                (rec['tags'] if col in (5, 6) and rec['tags'] else str(val)))
                 table.setItem(row_idx, col, item)
             if rec['video_id'] == self.current_id:
                 selected_row = row_idx
         if selected_row >= 0:
             table.selectRow(selected_row)
         table.blockSignals(False)
+        self.schedule_visible_thumbnails()
         if missing != self._last_missing:
             if missing:
                 self.add_log(f'[누락 파일] {len(missing)}개: 기본 라이브러리 보기에서 숨김(메모 DB 보존)')
@@ -1713,7 +2223,7 @@ class MainWindow(QMainWindow):
         selected = self.library_table.selectedItems()
         if not selected:
             return
-        key_item = self.library_table.item(selected[0].row(), 0)
+        key_item = self.library_table.item(selected[0].row(), 1)
         if not key_item:
             return
         video_id = key_item.data(Qt.ItemDataRole.UserRole)
@@ -1733,7 +2243,12 @@ class MainWindow(QMainWindow):
         self.save_classification(silent=True)
         self.current_id = video_id
         self.current_path = selected_path
-        self.video_info_label.setText(f"{row['channel']} · {row['title_override'] or row['title']} · {format_size(int(row['file_size']))}")
+        playlist = row['playlist_title'] or infer_playlist_name(row['file_path'])
+        self.video_info_label.setText(
+            f"{row['channel']} · {row['title_override'] or row['title']}\n"
+            f"재생목록: {playlist or '단일 영상'} · {format_duration(row['duration'])}"
+            f" · {format_size(int(row['file_size']))}")
+        self.update_thumbnail_preview()
         self._loading_note = True
         self.memo_edit.setPlainText(row["memo"])
         self._loading_note = False
@@ -1877,6 +2392,14 @@ class MainWindow(QMainWindow):
 
     def on_duration(self, length):
         self.time_slider.setRange(0, max(0, int(length)))
+        if self.current_id and int(length) > 0:
+            seconds = int(length) // 1000
+            rec = self.db.execute('SELECT duration FROM videos WHERE video_id=?', (self.current_id,)).fetchone()
+            if rec and seconds > 0 and not rec['duration']:
+                with self.db:
+                    self.db.execute('UPDATE videos SET duration=? WHERE video_id=?', (seconds, self.current_id))
+                self.add_log(f'[재생시간 확인] {self.current_id} = {format_duration(seconds)}')
+                self.refresh_library()
 
     def on_position(self, position):
         if not self._seeking:
@@ -1969,6 +2492,7 @@ class MainWindow(QMainWindow):
     def on_media_status(self, status):
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia,
                       QMediaPlayer.MediaStatus.BufferingMedia):
+            self.ensure_audio_track()
             if self._pending_seek is not None:
                 QTimer.singleShot(50, self._apply_pending_seek)
         if status == QMediaPlayer.MediaStatus.InvalidMedia and self._pending_seek is not None:
@@ -2042,6 +2566,7 @@ class MainWindow(QMainWindow):
                 self.db.execute('UPDATE videos SET file_path=?,updated_at=? WHERE video_id=?',
                                 (root_relative(result), now_str(), record['video_id']))
             self.current_path = result
+            self.update_thumbnail_preview()
             self.player.setSource(QUrl.fromLocalFile(str(result)))
             self.find_subtitle_files()
             self.add_log(f'[영상 이동] {path} -> {result} (연관 SRT/info.json 동반 이동)')
@@ -2078,6 +2603,7 @@ class MainWindow(QMainWindow):
                 self.db.execute('UPDATE videos SET title_override=?,file_path=?,updated_at=? WHERE video_id=?',
                                 (clean_title, root_relative(result), now_str(), record['video_id']))
             self.current_path = result
+            self.update_thumbnail_preview()
             self.player.setSource(QUrl.fromLocalFile(str(result)))
             self.find_subtitle_files()
             self.video_info_label.setText(f"{record['channel']} · {clean_title}")
@@ -2104,6 +2630,7 @@ class MainWindow(QMainWindow):
         self.save_memo(silent=True)
         self.player.stop()
         self.player.setSource(QUrl())
+        self.update_thumbnail_preview()
         errors = []
         for target in [path, *extras]:
             if target.exists() and not QFile.moveToTrash(str(target)):
@@ -2130,6 +2657,10 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.current_path)))
 
     def closeEvent(self, event):
+        if self.thumbnail_worker and self.thumbnail_worker.isRunning():
+            QMessageBox.information(self, '썸네일 다운로드 중', '먼저 썸네일 중단을 누른 뒤 종료해 주세요.')
+            event.ignore()
+            return
         if self.worker and self.worker.isRunning():
             QMessageBox.information(self, "다운로드 중", "다운로드 작업이 실행 중입니다. 먼저 '즉시 중단'한 후 종료해 주세요.")
             event.ignore()

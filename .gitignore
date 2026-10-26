@@ -97,9 +97,3 @@ videos/
 
 # Note: Files in %LOCALAPPDATA%\MintonVideoLibrary are already outside
 # the repository. Git ignore rules do not replace data backups.
-
-# Portable library root and generated clips if stored inside the project
-_database/
-clips/
-clip_exports/
-library_location.json

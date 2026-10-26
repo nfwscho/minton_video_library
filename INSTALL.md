@@ -1,4 +1,4 @@
-# INSTALL.md — Minton Video Library V1.2 설치·업데이트·이동 안내
+# INSTALL.md — Minton Video Library V1.3 설치·업데이트·이동 안내
 
 ## 1. Windows 사전 준비
 
@@ -6,7 +6,7 @@
 - Deno: YouTube 추출 JS 런타임
 - FFmpeg: H.264/AAC 영상 병합, 자막 변환에 필요
 - PySide6: GUI/동영상 재생
-- yt-dlp: 영상 및 한국어 자막 내려받기
+- yt-dlp: 영상, JPG 썸네일 및 한국어 자막 내려받기
 
 설치 확인 (PowerShell 새 창):
 
@@ -45,7 +45,34 @@ py -3.12 -m venv .venv
 
 `py -3.12`가 실행되지 않으면 Python 3.12를 먼저 설치하세요. 이미 `.venv`가 있으면 다시 만들지 않아도 됩니다.
 
-## 3. V1.1에서 V1.2로 업데이트
+## 3. V1.2에서 V1.3으로 업데이트
+
+**기존 `_database\library.db`는 삭제하지 마세요.** 새 버전에서는 DB를 초기화하지 않고 `videos.playlist_title`, `videos.playlist_id` 컬럼을 필요할 때에만 추가하며, 메모/분류/클립 구간/작업/설정은 그대로 보존합니다.
+
+1. 프로그램을 종료한 뒤 원본 DB를 백업합니다. 백업은 반드시 **프로그램이 완전히 종료된 상태**에서 진행하세요.
+
+   ```powershell
+   $db = 'D:\99.유튜브다운\minton.youtube\_database\library.db'
+   Copy-Item $db 'D:\stockproj\minton_video_library\library_before_v13.db'
+   ```
+
+   다운로드 루트를 바꿨다면 위 `$db`에 실제 경로를 입력하세요.
+2. V1.3 ZIP의 `minton_video_library.py`, `README.md`, `INSTALL.md`, `.gitignore`를 기존 `D:\stockproj\minton_video_library` 폴더로 덮어씁니다. 다운로드된 미디어와 `_database` 폴더는 유지합니다.
+3. 가상환경의 PySide6·yt-dlp를 업데이트합니다(권장).
+
+   ```powershell
+   cd D:\stockproj\minton_video_library
+   .\.venv\Scripts\python.exe -m pip install --upgrade PySide6 "yt-dlp[default]"
+   .\.venv\Scripts\python.exe minton_video_library.py
+   ```
+
+4. 라이브러리에서 썸네일/재생목록/재생시간 열을 확인합니다. 기존 MP4는 **누락 썸네일 받기**를 눌러 이미지 파일만 보충할 수 있습니다. 기존 영상 제목·파일명·메모는 유지됩니다.
+
+### 기존 V1.1 → V1.2 단계가 아직 필요한 경우
+
+아래 설명은 V1.1처럼 DB가 AppData에 있던 사용자를 위해 유지한 이전 단계 안내입니다. V1.3으로 바로 업데이트해도 기존 DB 복제·마이그레이션 기능이 보존되어 있습니다.
+
+## 3-1. V1.1에서 V1.2로 업데이트
 
 **중요: 기존 메모가 저장된 AppData DB를 절대 먼저 삭제하지 마세요.**
 
@@ -97,7 +124,34 @@ cd D:\stockproj\minton_video_library
 
 찾기로 `_database\library.db`가 없는 곳을 지정하면 **현재 DB 복사 / 새 라이브러리 시작 / 취소** 중 선택할 수 있습니다. 현재 DB 복사는 **영상 파일을 복사하지 않으므로**, 동일한 폴더 구조의 영상을 직접 옮긴 뒤 검색해야 합니다. 실수로 새 라이브러리를 생성해도 기존 폴더의 원본 DB는 삭제되지 않습니다.
 
-## 5. UI 사용법
+## 5. V1.3 사용법: 썸네일 및 소리
+
+### JPG 썸네일
+
+- 새로 다운로드하는 영상은 `--write-thumbnail --convert-thumbnails jpg`를 적용해 MP4와 같은 파일명으로 `.jpg`를 저장합니다.
+- 기존 영상은 **누락 썸네일 받기** → 대상 개수 확인 → 진행으로 보충합니다. `--skip-download`로 MP4를 다시 받지 않으며 영상별 요청 간격은 기본 3초입니다. 장시간 작업 시 **썸네일 중단** 후 다시 시작할 수 있습니다.
+- YouTube ID가 없는 순수 로컬 동영상은 원본 썸네일을 받을 수 없으므로 건너뜁니다. 같은 기본 파일명의 JPG/WEBP/PNG 이미지가 있다면 표시됩니다.
+- 한글 파일명 변경·영상 폴더 이동·휴지통 삭제 시 JPG도 관련 파일로 함께 처리합니다.
+
+### 영상 소리가 안 나오는 경우
+
+1. 영상 선택 후 `▶ 재생`으로 재생합니다. 재생 중 같은 버튼을 누르면 `Ⅱ 일시정지`가 됩니다.
+2. `🔊` 음소거 버튼과 **음량 슬라이더**를 확인합니다.
+3. **소리 출력 장치**에서 실제 연결된 스피커 또는 헤드셋을 선택합니다. 장치가 바뀌었다면 **장치 새로고침**을 누릅니다.
+4. **소리 진단** 버튼을 누릅니다. `Qt 감지 오디오 트랙=0`인데 `ffprobe 오디오=aac`라면 원본 소리는 존재하지만 Qt 디코더/출력에 문제가 있을 수 있습니다. MP4와 FFmpeg 실행환경을 확인하세요.
+5. Windows **설정 → 시스템 → 소리 → 볼륨 믹서**에서 Python 프로그램의 음량과 출력 장치를 확인합니다.
+6. **기본 플레이어로 열기**에서는 소리가 나는데 내장 재생기만 무음이면 PySide6/Qt Multimedia 백엔드 또는 출력 장치 호환성 문제입니다. PowerShell에서 `QT_MEDIA_BACKEND` 환경변수 등 실행환경을 확인해 주세요. 앱은 지정값이 없을 때 FFmpeg 백엔드를 우선 시도합니다.
+7. `ffprobe`에서도 오디오 트랙이 없다면 MP4 원본에 소리가 없는 상태일 수 있습니다. 이 경우 원본/다운로드 형식을 확인해야 합니다.
+
+위 절차는 원인을 진단하도록 구현된 것이며 실제 하드웨어에서 모든 무음 현상이 해결된다고 보장하지는 않습니다. 소리 진단 메시지와 하단 로그를 보내면 다음 수정에서 정확히 원인을 구분할 수 있습니다.
+
+### 라이브러리 표시
+
+- 목록 **썸네일·제목·채널·재생목록명·재생시간·대분류·세부분류·크기·업로드일·메모·파일** 순서로 표시합니다.
+- `HH:MM:SS` 형식의 재생시간은 `.info.json`, 이전 DB 또는 `ffprobe`/재생기 재생시간에서 채웁니다. 미확인 값은 `--:--:--`입니다.
+- 열 경계 드래그로 크기를 변경하며 종료 시 저장합니다. 기존 V1.2 열 너비 저장값은 V1.3 구성에 맞춰 이전됩니다.
+
+## 6. UI 사용법 (기존 기능)
 
 ### 다운로드
 
@@ -122,7 +176,7 @@ cd D:\stockproj\minton_video_library
 - 탐색기에서 같은 다운로드 루트 안으로 파일을 이동하면 자동 검색 또는 **폴더 다시 검색**으로 연결을 시도합니다. YouTube ID가 있는 영상은 해당 ID로 식별합니다.
 - 프로그램 **파일 이동** 버튼은 자막/info.json 파일을 함께 옮깁니다. **휴지통 삭제**는 연관 파일도 함께 처리합니다.
 
-## 6. 동영상 포맷과 휴대폰 활용
+## 7. 동영상 포맷과 휴대폰 활용
 
 V1.1의 사용자 지정 yt-dlp 옵션을 그대로 유지합니다.
 
@@ -131,17 +185,18 @@ V1.1의 사용자 지정 yt-dlp 옵션을 그대로 유지합니다.
 -f "bv[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=1080]"
 --merge-output-format mp4
 --write-subs --write-auto-subs --sub-langs "ko.*" --convert-subs srt
+--write-thumbnail --convert-thumbnails jpg
 ```
 
 모바일 클립 출력은 향후 FFmpeg로 선택 구간을 재인코딩 또는 스트림 복사하여 정확도/처리 속도를 선택하는 기능을 계획할 수 있습니다. 재생할 Android 기기의 지원 코덱, 파일 크기, 자막 파일명 일치 여부를 확인하세요.
 
-## 7. Git 및 GitHub 업로드
+## 8. Git 및 GitHub 업로드
 
 ```powershell
 cd D:\stockproj\minton_video_library
 git status
 git add minton_video_library.py README.md INSTALL.md .gitignore
-git commit -m "feat: v1.2 portable library DB and badminton video classification"
+git commit -m "feat: v1.3 add thumbnail library, playback audio diagnostics and playlist duration columns"
 git push origin main
 ```
 
@@ -149,7 +204,7 @@ git push origin main
 
 `.gitignore`가 DB, 영상, 자막, 로그 및 venv를 제외하도록 설정되어 있어도, **과거에 Git에 이미 추가된 대용량 파일은 자동 추적 해제되지 않습니다.** 그런 경우 `git rm --cached <파일경로>`로 인덱스에서만 제외한 뒤 커밋하세요.
 
-## 8. 오류 해결
+## 9. 오류 해결
 
 | 현상 | 해결 |
 |---|---|
@@ -161,6 +216,9 @@ git push origin main
 | 외장 디스크 변경 후 파일 누락 | **찾기**에서 DB가 포함된 새 `minton.youtube` 최상위 폴더 선택 |
 | 영상 크기 미표시 | 폴더 다시 검색. 이미 파일이 없는 경우 이전 DB에 크기 기록이 없으면 `-` 또는 `0 B`로 표시될 수 있음 |
 | 자막 목록 비어 있음 | 해당 영상의 `.srt` 유무와 자막 드롭다운 확인. YouTube가 한국어 자막을 제공하지 않으면 생성되지 않음 |
+| 썸네일 미표시 | JPG 누락 여부 확인 후 **누락 썸네일 받기**. 외부 유튜브 접근 제한/ID 없음 시 건너뜀. |
+| 영상 소리 안 나옴 | 출력 장치/음량/음소거 선택 → **소리 진단** → Windows 볼륨 믹서 확인. MP4 AAC 트랙 미포함 또는 Qt FFmpeg 디코더 문제일 수 있음 |
+| 재생시간 `--:--:--` | **폴더 다시 검색**. FFprobe가 설치되어 있고 영상 정보를 읽을 수 있으면 시간 보충 |
 | 분류가 다른 PC에서 안 보임 | 메모·분류가 있는 `_database\library.db`까지 복사했는지 확인 |
 | DB 파일 잠김 | 프로그램과 DB 뷰어를 종료하고 다시 시도. **실행 중 DB 파일만 복사하지 않기** |
 
@@ -170,4 +228,4 @@ git push origin main
 notepad "$env:LOCALAPPDATA\MintonVideoLibrary\logs\minton_video_library.log"
 ```
 
-**지원/검증 범위:** Python 문법 검사, SQLite V1.1 백업 복제·마이그레이션, 구간/분류 보존, 파일 크기 및 라이브러리 이동 복구는 테스트했습니다. 이 제작 환경에 PySide6가 설치되어 있지 않아 실제 Windows GUI/yt-dlp/FFmpeg 통합 실행은 미검증입니다.
+**V1.3 검증 범위:** Python 문법 검사, SQLite 마이그레이션 및 기존 메모·태그 보존, 라이브러리 이동, 썸네일 매칭·동반 파일 개명, MP4 재다운로드 없는 `--skip-download` 명령 단위 테스트(가짜 실행기), FFprobe 길이 판독, ZIP 무결성 검사를 통과했습니다. PySide6 및 실제 YouTube/Windows 오디오 통합 테스트는 환경 제약으로 수행하지 못했습니다.
