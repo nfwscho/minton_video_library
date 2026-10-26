@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""
-Minton Video Library v1.1 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
+r"""
+Minton Video Library v1.2 | 배드민턴 유튜브 영상 다운로드 및 관리 프로그램
 =====================================================================
 [프로그램 전체 기능 및 동작 보존 목록]
 01. Windows Python 3.12 + PySide6 기반 단일 Python 소스 GUI.
-02. 최초 다운로드 루트 기본값 D:\\99.유튜브다운\\minton.youtube; 변경값 SQLite에 저장.
+02. 최초 다운로드 루트 기본값 D:\\99.유튜브다운\\minton.youtube; 선택값은 폴더 힌트와 SQLite에 저장.
 03. 여러 YouTube 단일 영상/재생목록 URL을 붙여 넣어 다운로드 대기열에 등록.
 04. 재생목록 메타데이터를 먼저 확장하고 각 영상을 개별 대기 항목으로 저장.
 05. 동시에 1개만 다운로드하는 순차 작업자(QThread)와 개별 다운로드 간 대기 시간.
@@ -19,7 +19,7 @@ Minton Video Library v1.1 | 배드민턴 유튜브 영상 다운로드 및 관�
 12. 채널명 디렉터리 자동 생성, '채널 - 제목 [영상ID] - YYYY-MM-DD.mp4' 저장.
 13. yt-dlp --print after_move:filepath로 병합 완료 파일의 실제 경로 확인.
 14. 미디어 메타데이터 .info.json 별도 기록(보관 및 향후 자세분석 연동 용도).
-15. SQLite WAL 저장: 설정, 다운로드 대기열, 미디어 색인, 개별 메모.
+15. SQLite WAL 저장: 설정, 다운로드 대기열, 미디어 색인, 개별 메모 (현재는 라이브러리 내부 DB).
 16. 재실행 시 미완료(running) 작업은 대기(queued)로 복구.
 17. 기존 다운로드 폴더 하위 미디어를 직접 스캔해 라이브러리로 가져오기.
 18. 기존 라이브러리의 영상은 중복 다운로드를 생략(파일 존재 시).
@@ -30,7 +30,7 @@ Minton Video Library v1.1 | 배드민턴 유튜브 영상 다운로드 및 관�
 22. 영상별 메모 직접 작성/저장, 영상 전환 및 종료 시 자동 저장.
 23. 동영상 파일 및 저장 폴더 Windows 탐색기/기본 플레이어로 열기.
 24. 진행 상태·진행률·오류·현재 처리 항목을 GUI에 표시.
-25. 로깅 화면과 로테이션 파일 로그(LocalAppData/MintonVideoLibrary/logs).
+25. 로깅 화면과 로테이션 파일 로그(LocalAppData/MintonVideoLibrary/logs; 기존 로그 위치 유지).
 26. ffmpeg, deno, yt-dlp 실행환경 확인 및 실행 조건 안내.
 27. 창 및 분할창 크기 등 UI 상태 보관(SQLite settings).
 28. Windows 콘솔창 없이 yt-dlp subprocess 실행, 한글 Unicode 경로 지원.
@@ -55,10 +55,26 @@ Minton Video Library v1.1 | 배드민턴 유튜브 영상 다운로드 및 관�
 44. 동영상 준비(LoadedMedia/BufferedMedia) 후 지연 탐색 적용 및 재생.
 45. 상태 변경/폴더 이동/파일 누락/이름변경 등 추가 로그; 기존 메시지 유지.
 
+[V1.2 추가/수정 - 기존 V1.1의 기능과 로그 흐름 유지]
+46. SQLite 데이터베이스를 라이브러리 루트/_database/library.db에 저장.
+47. 기존 %LOCALAPPDATA%/MintonVideoLibrary/library.db는 SQLite 온라인 백업으로 최초 1회 복제.
+48. 영상 파일 경로를 다운로드 루트 기준 상대 경로로 저장하여 드라이브 변경에 대응.
+49. 이전 절대경로를 DB 내부 설정의 과거 루트에 맞추어 상대경로로 마이그레이션.
+50. AppData에는 로그 및 마지막 라이브러리 경로 힌트만 보관; 메모와 영상 DB는 포터블.
+51. 라이브러리 위치 선택/변경 및 --root 인자 지원; 존재하지 않는 경로는 안전하게 재선택.
+52. 동영상 크기(Byte / MB / GB)를 DB에 기록하고 라이브러리 컬럼에 표시.
+53. 배드민턴 기술·수비·포지션·레슨·대회 등의 대분류/세부 분류 기본 제공.
+54. 수동 분류, 여러 태그(쉼표 구분), 분류별 목록 필터와 검색.
+55. 구간 시작/끝 시각 기록, 구간 후보 저장/재생/삭제(실제 클립 출력은 후속 버전).
+56. SQLite 메모·분류·구간표시 데이터는 파일 스캔/다운로드 시에도 보존.
+57. 이전 라이브러리 DB는 삭제하지 않으며, SQLite 파일 검사 및 WAL 체크포인트 지원.
+
 [저장 위치]
-- 프로그램: D:\\stockproj\\minton_video_library\\minton_video_library.py (권장)
-- 데이터베이스/로그: %LOCALAPPDATA%\\MintonVideoLibrary\\ (Git과 분리)
-- 다운로드: 사용자 설정 폴더 아래 %(channel)s\\파일명
+- 프로그램: D:\stockproj\minton_video_library\minton_video_library.py (권장)
+- 데이터베이스: 라이브러리루트\_database\library.db (영상과 함께 이동)
+- 로그: %LOCALAPPDATA%\MintonVideoLibrary\logs (기존 위치 유지)
+- 마지막 사용 폴더 힌트: %LOCALAPPDATA%\MintonVideoLibrary\library_location.json
+- 다운로드: 사용자 설정 폴더 아래 채널/재생목록/파일명
 
 [의존성]
   py -3.12 -m venv .venv
@@ -78,6 +94,7 @@ import hashlib
 import html
 import json
 import logging
+import ntpath
 from logging.handlers import RotatingFileHandler
 import os
 from pathlib import Path
@@ -103,9 +120,13 @@ from PySide6.QtWidgets import (
     QHeaderView, QAbstractItemView, QCheckBox, QDialog, QInputDialog, QListWidgetItem,
 )
 
-APP_TITLE = "Minton Video Library v1.1"
+APP_TITLE = "Minton Video Library v1.2"
 APP_DATA = Path(os.getenv("LOCALAPPDATA") or (Path.home() / ".local" / "share")) / "MintonVideoLibrary"
-DB_PATH = APP_DATA / "library.db"
+# DB 경로는 앱 폴더와 분리하여 라이브러리 폴더와 항상 함께 이동한다.
+LEGACY_DB_PATH = APP_DATA / "library.db"
+ROOT_POINTER = APP_DATA / "library_location.json"
+DB_PATH = None  # main()이 라이브러리 위치를 확정한 뒤 설정한다.
+ACTIVE_ROOT = None
 LOG_PATH = APP_DATA / "logs" / "minton_video_library.log"
 DEFAULT_ROOT = r"D:\99.유튜브다운\minton.youtube" if os.name == "nt" else str(Path.home() / "Videos" / "minton.youtube")
 FORMAT_SELECTOR = "bv[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=1080]"
@@ -116,6 +137,26 @@ KOREAN_PLAYLIST_OVERRIDES = {
     'PLX1IndZwkjj0': ('윤이콕TV', '물A조라고 놀리지말아요'),
 }
 VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
+
+# 기술별 체계적 분류. 여러 영역에 걸친 영상은 쉼표 구분 태그를 함께 이용한다.
+BADMINTON_CATEGORIES = {
+    '미분류': ['미분류'],
+    '기초·기본기': ['그립·라켓 잡기', '준비 자세·스플릿 스텝', '풋워크·스텝',
+               '타점·스윙 원리', '체중이동·밸런스', '기초 반복 훈련'],
+    '스트로크·기술': ['클리어', '스매시', '드롭·컷트', '헤어핀', '드라이브', '푸시',
+                 '리프트·로브', '네트킬', '백핸드', '서브', '리시브', '페인트·응용 기술'],
+    '수비·리턴': ['스매시 수비', '드라이브 수비', '네트 수비', '서브 리턴',
+               '리시브·리턴 훈련', '수비→공격 전환'],
+    '전술·포지션': ['단식 포지션', '복식 전위', '복식 후위', '복식 로테이션',
+                '혼합복식', '공격·수비 전환', '경기 운영·전술', '상대 유형별 대응'],
+    '레슨·코칭': ['입문 레슨', '중급 레슨', '상급 레슨', '개인 레슨',
+               '자세 분석·교정', '연습 드릴', '코치 시범'],
+    '대회·경기 영상': ['국제대회', '국내대회', '동호인 대회', '단식 경기',
+                 '남자 복식', '여자 복식', '혼합복식 경기', '하이라이트', '경기 분석'],
+    '운동·장비·기타': ['체력·근력', '유연성·부상 예방', '라켓·스트링',
+                  '셔틀콕·용품', '규칙·판정', '인터뷰·기타'],
+}
+
 YT_ID_PATTERN = re.compile(r"\[([A-Za-z0-9_-]{11})\]")
 SRT_PATTERN = re.compile(r"(\d\d):(\d\d):(\d\d)[,.](\d{1,3})\s*-->\s*(\d\d):(\d\d):(\d\d)[,.](\d{1,3})")
 PROGRESS_PATTERN = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
@@ -134,7 +175,119 @@ def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def set_library_root(root: str | Path) -> None:
+    """라이브러리 루트를 활성화하고 DB 위치를 변경한다. 변경 전에 연결을 닫아야 한다."""
+    global ACTIVE_ROOT, DB_PATH
+    new_root = Path(root).expanduser().resolve()
+    new_root.mkdir(parents=True, exist_ok=True)
+    (new_root / '_database').mkdir(parents=True, exist_ok=True)
+    ACTIVE_ROOT = new_root
+    DB_PATH = new_root / '_database' / 'library.db'
+    ROOT_POINTER.write_text(json.dumps({'root': str(new_root)}, ensure_ascii=False, indent=2), encoding='utf-8')
+    LOGGER.info('[라이브러리 위치 설정] 루트: %s | DB: %s', ACTIVE_ROOT, DB_PATH)
+
+
+def root_relative(path: str | Path) -> str:
+    """현재 루트 아래 영상 파일을 안전한 '/' 상대경로로 저장한다."""
+    src = Path(path).resolve()
+    if ACTIVE_ROOT is None:
+        return str(src)
+    try:
+        return src.relative_to(ACTIVE_ROOT.resolve()).as_posix()
+    except ValueError as ex:
+        raise ValueError(f'파일이 현재 라이브러리 범위 밖에 있습니다: {src}') from ex
+
+
+def media_path(saved_path: str, root: Path | None = None) -> Path:
+    """DB의 포터블 상대경로를 OS의 실제 절대경로로 복원한다."""
+    root = root or ACTIVE_ROOT
+    if root is None:
+        return Path(saved_path)
+    value = Path(str(saved_path))
+    if value.is_absolute() or ntpath.isabs(str(saved_path)):
+        return value
+    resolved = (root / value).resolve()
+    if not is_in_directory(resolved, root):
+        raise ValueError(f'라이브러리 외부 경로 차단: {saved_path}')
+    return resolved
+
+
+def portable_legacy_path(saved: str, old_root: str, new_root: Path) -> str | None:
+    """기존 절대경로를 현재 폴더로 안전하게 옮길 수 있는 상대경로로 계산."""
+    if not saved:
+        return None
+    if not (ntpath.isabs(saved) or Path(saved).is_absolute()):
+        try:
+            candidate = media_path(saved, new_root)
+            return candidate.relative_to(new_root.resolve()).as_posix()
+        except ValueError:
+            return None
+    for candidate_root in (str(new_root), old_root):
+        if not candidate_root:
+            continue
+        try:
+            if ntpath.isabs(saved) and ntpath.isabs(candidate_root):
+                relative = ntpath.relpath(saved, candidate_root)
+                if not (relative == '..' or relative.startswith('..\\') or ntpath.isabs(relative)):
+                    return Path(*relative.split('\\')).as_posix()
+            elif Path(saved).is_absolute() and Path(candidate_root).is_absolute():
+                return Path(saved).relative_to(Path(candidate_root)).as_posix()
+        except (ValueError, OSError):
+            continue
+    return None
+
+
+def format_size(num_bytes: int) -> str:
+    if num_bytes < 0:
+        return '-'
+    if num_bytes < 1024:
+        return f'{num_bytes} B'
+    if num_bytes < 1024 ** 2:
+        return f'{num_bytes / 1024:.1f} KB'
+    if num_bytes < 1024 ** 3:
+        return f'{num_bytes / 1024**2:,.1f} MB'
+    return f'{num_bytes / 1024**3:,.2f} GB'
+
+
+def copy_sqlite_database(source: Path, dest: Path) -> None:
+    """WAL에 남은 데이터까지 SQLite 백업 API로 복사한다 (기존 DB 삭제 안 함)."""
+    if dest.exists():
+        raise FileExistsError(f'기존 DB 보호: {dest}')
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with sqlite3.connect(str(source), timeout=20) as src:
+            with sqlite3.connect(str(dest), timeout=20) as out:
+                src.backup(out)
+    except Exception:
+        if dest.exists():
+            dest.unlink()  # 새로 생성하다 실패한 불완전 파일만 제거
+        raise
+    LOGGER.info('[기존 DB 백업 복제] %s -> %s (원본 보존)', source, dest)
+
+
+def migrate_file_paths(db: sqlite3.Connection) -> None:
+    """V1.1의 절대경로를 이동 가능한 상대경로로 일괄 교체한다."""
+    old_root = get_setting(db, 'download_root', str(ACTIVE_ROOT))
+    changed = skipped = 0
+    with db:
+        for row in db.execute('SELECT video_id,file_path FROM videos').fetchall():
+            rel = portable_legacy_path(str(row['file_path']), old_root, ACTIVE_ROOT)
+            if rel is None:
+                skipped += 1
+                continue
+            if rel != row['file_path']:
+                db.execute('UPDATE videos SET file_path=? WHERE video_id=?', (rel, row['video_id']))
+                changed += 1
+        db.execute('INSERT INTO settings(key,value) VALUES(?,?) '
+                   'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                   ('download_root', str(ACTIVE_ROOT)))
+    if changed or skipped:
+        LOGGER.info('[상대경로 변환] %d개 변환 / %d개 경로 미확인(폴더 재검색 필요)', changed, skipped)
+
+
 def connect_db() -> sqlite3.Connection:
+    if DB_PATH is None:
+        raise RuntimeError('라이브러리 위치를 먼저 지정해야 합니다')
     conn = sqlite3.connect(str(DB_PATH), timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -142,7 +295,11 @@ def connect_db() -> sqlite3.Connection:
     return conn
 
 
-def init_db() -> None:
+def init_db(migrate_old: bool = True) -> None:
+    if DB_PATH is None:
+        raise RuntimeError('DB 저장 경로가 설정되지 않았습니다')
+    if migrate_old and not DB_PATH.exists() and LEGACY_DB_PATH.exists():
+        copy_sqlite_database(LEGACY_DB_PATH, DB_PATH)
     with connect_db() as db:
         db.executescript("""
         CREATE TABLE IF NOT EXISTS settings (
@@ -184,12 +341,30 @@ def init_db() -> None:
             },
             'videos': {'title_override': "TEXT NOT NULL DEFAULT ''"},
         }
+        migrations['videos'].update({
+            'file_size': 'INTEGER NOT NULL DEFAULT 0',
+            'major_category': "TEXT NOT NULL DEFAULT '미분류'",
+            'sub_category': "TEXT NOT NULL DEFAULT '미분류'",
+            'tags': "TEXT NOT NULL DEFAULT ''",
+        })
         for table, columns in migrations.items():
             existing = {row['name'] for row in db.execute(f'PRAGMA table_info({table})')}
             for name, definition in columns.items():
                 if name not in existing:
                     db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
                     LOGGER.info('[DB 마이그레이션] %s.%s 컬럼 추가', table, name)
+        db.execute("""CREATE TABLE IF NOT EXISTS clip_marks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT NOT NULL,
+            start_ms INTEGER NOT NULL,
+            end_ms INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            memo TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(video_id) REFERENCES videos(video_id)
+        )""")
+        db.execute('CREATE INDEX IF NOT EXISTS idx_clip_video ON clip_marks(video_id,id)')
+        migrate_file_paths(db)
 
 
 
@@ -357,7 +532,7 @@ def local_video_record(path: Path) -> dict:
     id_match = YT_ID_PATTERN.search(path.stem)
     file_id = (info.get("id") or (id_match.group(1) if id_match else ""))
     if not file_id:
-        file_id = "local:" + hashlib.sha1(str(path.resolve()).casefold().encode("utf-8")).hexdigest()
+        file_id = "local:" + hashlib.sha1(root_relative(path).casefold().encode("utf-8")).hexdigest()
     title = info.get("title") or path.stem
     channel = info.get("channel") or path.parent.name
     upload_date = str(info.get("upload_date") or "")
@@ -369,23 +544,44 @@ def local_video_record(path: Path) -> dict:
     # 목록 폴더가 있을 때 채널명은 info.json의 원본 채널을 우선 사용한다.
     return dict(video_id=str(file_id), title=str(title), channel=str(channel),
                 upload_date=upload_date, duration=int(info.get("duration") or 0),
-                file_path=str(path), source_url=str(info.get("webpage_url") or ""))
+                file_path=root_relative(path), source_url=str(info.get("webpage_url") or ""),
+                file_size=path.stat().st_size)
 
 
-def upsert_video(db: sqlite3.Connection, data: dict) -> None:
+def upsert_video(db: sqlite3.Connection, data: dict) -> str:
     # 갱신 시 기존 메모를 절대 덮어쓰지 않는다.
+    # 오래된 로컬 영상 ID(local:절대경로해시)는 파일 위치를 기준으로 재연결한다.
+    if str(data['video_id']).startswith('local:'):
+        existing = db.execute('SELECT video_id FROM videos WHERE file_path=?',
+                              (data['file_path'],)).fetchone()
+        if existing:
+            data = {**data, 'video_id': existing['video_id']}
+        else:
+            # 탐색기에서 직접 다른 폴더로 옮긴 로컬 영상: 이름+크기가 같고
+            # 과거 경로가 사라진 후보가 딱 하나일 때에만 메모/분류를 재연결한다.
+            candidates = db.execute(
+                'SELECT video_id,file_path FROM videos WHERE title=? AND file_size=? '
+                "AND video_id LIKE 'local:%'",
+                (data['title'], data['file_size'])).fetchall()
+            missing = [r for r in candidates if not media_path(r['file_path']).is_file()]
+            if len(missing) == 1:
+                data = {**data, 'video_id': missing[0]['video_id']}
+                LOGGER.info('[로컬 영상 경로 재연결] %s -> %s',
+                            missing[0]['file_path'], data['file_path'])
     with db:
         db.execute("""
-        INSERT INTO videos(video_id,title,channel,upload_date,duration,file_path,source_url,updated_at)
-        VALUES(:video_id,:title,:channel,:upload_date,:duration,:file_path,:source_url,:updated_at)
+        INSERT INTO videos(video_id,title,channel,upload_date,duration,file_path,source_url,file_size,updated_at)
+        VALUES(:video_id,:title,:channel,:upload_date,:duration,:file_path,:source_url,:file_size,:updated_at)
         ON CONFLICT(video_id) DO UPDATE SET
             title=excluded.title, channel=excluded.channel,
             upload_date=CASE WHEN excluded.upload_date<>'' THEN excluded.upload_date ELSE videos.upload_date END,
             duration=CASE WHEN excluded.duration>0 THEN excluded.duration ELSE videos.duration END,
             file_path=excluded.file_path,
+            file_size=excluded.file_size,
             source_url=CASE WHEN excluded.source_url<>'' THEN excluded.source_url ELSE videos.source_url END,
             updated_at=excluded.updated_at
         """, {**data, "updated_at": now_str()})
+    return str(data['video_id'])
 
 
 def srt_millis(parts: tuple[str, ...]) -> int:
@@ -583,8 +779,8 @@ class DownloadWorker(QThread):
         video_url = f'https://www.youtube.com/watch?v={video_id}' if video_id else url
         if video_id:
             existing = db.execute("SELECT file_path FROM videos WHERE video_id=?", (video_id,)).fetchone()
-            if existing and Path(existing['file_path']).is_file():
-                old_path = Path(existing['file_path'])
+            if existing and media_path(existing['file_path']).is_file():
+                old_path = media_path(existing['file_path'])
                 if dest and old_path.parent.resolve() != dest.resolve():
                     # V1.0의 채널명\파일처럼 최상위 채널 폴더에 저장된 구형 파일은
                     # 재다운로드하지 않고 재생목록 폴더에 안전하게 이동한다.
@@ -594,7 +790,7 @@ class DownloadWorker(QThread):
                             moved = move_media_bundle(old_path, dest)
                             with db:
                                 db.execute('UPDATE videos SET file_path=?,updated_at=? WHERE video_id=?',
-                                           (str(moved), now_str(), video_id))
+                                           (root_relative(moved), now_str(), video_id))
                             self._emit(f'[기존 영상 재분류] {old_path} -> {moved} (메모·자막 유지)')
                         else:
                             self._emit(f'[중복 생략] 기존 영상이 다른 폴더에 있습니다: {old_path}; '
@@ -763,7 +959,8 @@ class ScanWorker(QThread):
         results = []
         try:
             if self.root.is_dir():
-                for directory, _, filenames in os.walk(self.root):
+                for directory, subdirs, filenames in os.walk(self.root):
+                    subdirs[:] = [d for d in subdirs if d not in ('_database', '.git', '.venv')]
                     for name in filenames:
                         path = Path(directory) / name
                         if path.suffix.lower() in VIDEO_EXTS:
@@ -777,7 +974,7 @@ class ScanWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        init_db()
+        init_db(migrate_old=False)
         self.db = connect_db()
         self.worker: DownloadWorker | None = None
         self.scanner: ScanWorker | None = None
@@ -787,11 +984,14 @@ class MainWindow(QMainWindow):
         self.subtitle_starts: list[int] = []
         self.current_subtitle_index = -1
         self._loading_note = False
+        self._loading_category = False
         self._seeking = False
         self._pending_seek: int | None = None
         self.subtitle_window: QDialog | None = None
         self.subtitle_popup_list: QListWidget | None = None
         self._last_missing: set[str] = set()
+        self._segment_start: int | None = None
+        self._segment_end: int | None = None
         self._build_ui()
         self._load_settings()
         self.refresh_jobs()
@@ -824,7 +1024,9 @@ class MainWindow(QMainWindow):
         folder_row = QHBoxLayout()
         folder_row.addWidget(QLabel("저장 폴더"))
         self.root_input = QLineEdit()
-        self.root_input.editingFinished.connect(self.save_settings)
+        # DB가 루트에 있으므로 텍스트 직접 수정보다 안전한 폴더 선택만 허용한다.
+        self.root_input.setReadOnly(True)
+        self.root_input.setToolTip('폴더 전체를 다른 드라이브로 이동했다면 찾기로 새 위치를 선택하세요.')
         folder_row.addWidget(self.root_input, stretch=1)
         self.browse_btn = QPushButton("찾기")
         self.browse_btn.clicked.connect(self.browse_folder)
@@ -832,6 +1034,10 @@ class MainWindow(QMainWindow):
         open_dir_btn = QPushButton("폴더 열기")
         open_dir_btn.clicked.connect(lambda: self.open_folder(self.root_input.text()))
         folder_row.addWidget(open_dir_btn)
+        db_open_btn = QPushButton('DB 폴더')
+        db_open_btn.setToolTip('영상 폴더 아래 _database\\library.db가 저장되어 있습니다.')
+        db_open_btn.clicked.connect(lambda: self.open_folder(str(DB_PATH.parent)))
+        folder_row.addWidget(db_open_btn)
         folder_row.addWidget(QLabel("간격 (초)"))
         self.interval_spin = QSpinBox()
         self.interval_spin.setRange(0, 3600)
@@ -917,13 +1123,17 @@ class MainWindow(QMainWindow):
         lib_bar = QHBoxLayout()
         lib_bar.addWidget(QLabel("영상 라이브러리"))
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("제목 / 채널 / 메모 / 영상 ID 검색")
+        self.search_input.setPlaceholderText("제목 / 채널 / 메모 / 태그 / 분류 / 영상 ID 검색")
         self.search_input.textChanged.connect(self.refresh_library)
         lib_bar.addWidget(self.search_input, 1)
         self.channel_combo = QComboBox()
         self.channel_combo.setMinimumWidth(140)
         self.channel_combo.currentIndexChanged.connect(self.refresh_library)
         lib_bar.addWidget(self.channel_combo)
+        self.category_filter = QComboBox()
+        self.category_filter.addItems(['전체 분류', *BADMINTON_CATEGORIES.keys()])
+        self.category_filter.currentIndexChanged.connect(self.refresh_library)
+        lib_bar.addWidget(self.category_filter)
         scan_btn = QPushButton('폴더 다시 검색')
         scan_btn.clicked.connect(lambda: self.scan_library(auto=False))
         lib_bar.addWidget(scan_btn)
@@ -940,8 +1150,9 @@ class MainWindow(QMainWindow):
             manage_bar.addWidget(button)
         manage_bar.addStretch()
         ll.addLayout(manage_bar)
-        self.library_table = QTableWidget(0, 5)
-        self.library_table.setHorizontalHeaderLabels(["제목", "채널", "업로드일", "메모", "파일"])
+        self.library_table = QTableWidget(0, 8)
+        self.library_table.setHorizontalHeaderLabels(
+            ["제목", "채널", "대분류", "세부분류", "크기", "업로드일", "메모", "파일"])
         self.library_table.verticalHeader().setVisible(False)
         self.library_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.library_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -951,10 +1162,8 @@ class MainWindow(QMainWindow):
         self.library_table.horizontalHeader().setStretchLastSection(False)
         self.library_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.library_table.setColumnWidth(0, 310)
-        self.library_table.setColumnWidth(4, 115)
-        self.library_table.setColumnWidth(1, 115)
-        self.library_table.setColumnWidth(2, 95)
-        self.library_table.setColumnWidth(3, 50)
+        for i, width in enumerate((310, 115, 130, 145, 90, 105, 55, 100)):
+            self.library_table.setColumnWidth(i, width)
         self.library_table.itemSelectionChanged.connect(self.on_video_selected)
         self.library_table.cellDoubleClicked.connect(lambda _r, _c: self.play_current())
         ll.addWidget(self.library_table)
@@ -1027,6 +1236,63 @@ class MainWindow(QMainWindow):
         save_btn.clicked.connect(self.save_memo)
         ml.addWidget(save_btn)
         tabs.addTab(memo_tab, "영상 메모")
+        category_tab = QWidget()
+        cat_layout = QVBoxLayout(category_tab)
+        cat_layout.addWidget(QLabel('영상별 기술 분류 (여러 특징은 태그로 함께 기록)'))
+        row_major = QHBoxLayout()
+        row_major.addWidget(QLabel('대분류'))
+        self.major_combo = QComboBox()
+        self.major_combo.addItems(list(BADMINTON_CATEGORIES))
+        self.major_combo.currentTextChanged.connect(self.on_major_changed)
+        row_major.addWidget(self.major_combo, 1)
+        cat_layout.addLayout(row_major)
+        row_sub = QHBoxLayout()
+        row_sub.addWidget(QLabel('세부분류'))
+        self.sub_combo = QComboBox()
+        self.sub_combo.currentTextChanged.connect(self.save_classification)
+        row_sub.addWidget(self.sub_combo, 1)
+        cat_layout.addLayout(row_sub)
+        cat_layout.addWidget(QLabel('태그 (쉼표로 구분: 예: 복식, 스매시, 전위, 초보자)'))
+        self.tags_edit = QLineEdit()
+        self.tags_edit.setPlaceholderText('스매시, 복식, 발놀림, 중요구간')
+        self.tags_edit.editingFinished.connect(self.save_classification)
+        cat_layout.addWidget(self.tags_edit)
+        save_cat = QPushButton('분류·태그 저장')
+        save_cat.clicked.connect(self.save_classification)
+        cat_layout.addWidget(save_cat)
+        cat_layout.addStretch()
+        tabs.addTab(category_tab, '배드민턴 분류·태그')
+        segment_tab = QWidget()
+        seg_layout = QVBoxLayout(segment_tab)
+        seg_layout.addWidget(QLabel('향후 클립 제작용 구간 표시 (현재 버전은 실제 영상 자르기 미지원)'))
+        seg_buttons = QHBoxLayout()
+        start_btn = QPushButton('현재 시각 → 시작점')
+        start_btn.clicked.connect(self.mark_start)
+        seg_buttons.addWidget(start_btn)
+        end_btn = QPushButton('현재 시각 → 종료점')
+        end_btn.clicked.connect(self.mark_end)
+        seg_buttons.addWidget(end_btn)
+        seg_layout.addLayout(seg_buttons)
+        self.mark_info = QLabel('시작 - / 끝 -')
+        seg_layout.addWidget(self.mark_info)
+        self.mark_title = QLineEdit()
+        self.mark_title.setPlaceholderText('구간명 (예: 스매시 타점 잡는 법)')
+        seg_layout.addWidget(self.mark_title)
+        save_mark_btn = QPushButton('구간 후보 저장')
+        save_mark_btn.clicked.connect(self.save_clip_mark)
+        seg_layout.addWidget(save_mark_btn)
+        self.clip_list = QListWidget()
+        self.clip_list.itemDoubleClicked.connect(self.play_clip_mark)
+        seg_layout.addWidget(self.clip_list)
+        seg_manage = QHBoxLayout()
+        clip_play_btn = QPushButton('구간 시작 재생')
+        clip_play_btn.clicked.connect(self.play_clip_mark)
+        seg_manage.addWidget(clip_play_btn)
+        clip_del_btn = QPushButton('선택 구간 삭제')
+        clip_del_btn.clicked.connect(self.delete_clip_mark)
+        seg_manage.addWidget(clip_del_btn)
+        seg_layout.addLayout(seg_manage)
+        tabs.addTab(segment_tab, '클립 구간 기록')
         sub_tab = QWidget()
         sl = QVBoxLayout(sub_tab)
         self.subtitle_combo = QComboBox()
@@ -1070,7 +1336,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("동시 다운로드 1개 · 메모와 파일은 로컬에 저장됩니다")
 
     def _load_settings(self):
-        self.root_input.setText(get_setting(self.db, "download_root", DEFAULT_ROOT))
+        self.root_input.setText(str(ACTIVE_ROOT))
         self.interval_spin.setValue(int(get_setting(self.db, "interval", "20")))
         try:
             sizes = json.loads(get_setting(self.db, "split_outer", "[]"))
@@ -1094,15 +1360,64 @@ class MainWindow(QMainWindow):
     def save_settings(self):
         if not hasattr(self, "db"):
             return
-        set_setting(self.db, "download_root", self.root_input.text().strip())
+        # 선택된 루트는 파일 경로 힌트와 DB 모두에서 일치해야 한다.
+        set_setting(self.db, "download_root", str(ACTIVE_ROOT))
         set_setting(self.db, "interval", str(self.interval_spin.value()))
 
     def browse_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "다운로드 경로 선택", self.root_input.text().strip())
-        if folder:
-            self.root_input.setText(folder)
-            self.save_settings()
-            self.scan_library()
+        if (self.worker and self.worker.isRunning()) or (self.scanner and self.scanner.isRunning()):
+            QMessageBox.warning(self, '라이브러리 변경', '다운로드/검색 작업 종료 후 라이브러리 위치를 변경하세요.')
+            return
+        folder = QFileDialog.getExistingDirectory(self, '이동한 minton.youtube 루트 폴더 선택',
+                                                  self.root_input.text().strip())
+        if not folder or Path(folder).resolve() == ACTIVE_ROOT:
+            return
+        target = Path(folder).resolve()
+        target_db = target / '_database' / 'library.db'
+        copy_current_db = False
+        if not target_db.exists():
+            reply = QMessageBox.question(
+                self, '새 라이브러리 위치',
+                '선택한 폴더에 _database\\library.db가 없습니다.\n\n'
+                '예: 현재 DB(메모·분류·작업)를 복사해 새 위치에서 사용합니다.\n'
+                '아니요: 이 폴더에 완전히 새로운 라이브러리를 만듭니다.\n'
+                '취소: 변경하지 않습니다.\n\n'
+                '중요: DB 복사는 실제 영상 파일을 이동하지 않습니다.',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel)
+            if reply == QMessageBox.StandardButton.Cancel:
+                return
+            copy_current_db = reply == QMessageBox.StandardButton.Yes
+        self.save_memo(silent=True)
+        self.save_classification(silent=True)
+        self.player.stop()
+        self.player.setSource(QUrl())
+        old_root, old_db = ACTIVE_ROOT, DB_PATH
+        try:
+            if copy_current_db:
+                copy_sqlite_database(DB_PATH, target_db)
+            self.db.close()
+            set_library_root(target)
+            init_db(migrate_old=False)
+            self.db = connect_db()
+        except Exception as ex:
+            set_library_root(old_root)
+            self.db = connect_db()
+            self.add_log(f'[라이브러리 전환 오류] {ex}')
+            QMessageBox.critical(self, '라이브러리 전환 실패', str(ex))
+            return
+        self.current_id = None
+        self.current_path = None
+        self._last_missing.clear()
+        self.root_input.setText(str(ACTIVE_ROOT))
+        self.memo_edit.clear()
+        self.tags_edit.clear()
+        self.clip_list.clear()
+        self._load_settings()
+        self.refresh_jobs()
+        self.refresh_library()
+        self.scan_library()
+        self.add_log(f'[라이브러리 전환] {old_root} -> {ACTIVE_ROOT} | DB: {DB_PATH}')
 
     def add_log(self, message: str):
         LOGGER.info(message)
@@ -1299,17 +1614,20 @@ class MainWindow(QMainWindow):
         moved = 0
         for record in records:
             old = self.db.execute('SELECT file_path FROM videos WHERE video_id=?', (record['video_id'],)).fetchone()
-            if old and old['file_path'] != record['file_path']:
-                moved += 1
             try:
-                upsert_video(self.db, record)
-                if (record['video_id'] == self.current_id and self.current_path is not None
-                        and str(self.current_path) != record['file_path']):
-                    self.current_path = Path(record['file_path'])
+                resolved_id = upsert_video(self.db, record)
+                if resolved_id != record['video_id']:
+                    old = self.db.execute('SELECT file_path FROM videos WHERE video_id=?',
+                                          (resolved_id,)).fetchone()
+                if old and old['file_path'] != record['file_path']:
+                    moved += 1
+                if (resolved_id == self.current_id and self.current_path is not None
+                        and self.current_path != media_path(record['file_path'])):
+                    self.current_path = media_path(record['file_path'])
                     self.player.stop()
-                    self.player.setSource(QUrl.fromLocalFile(record['file_path']))
+                    self.player.setSource(QUrl.fromLocalFile(str(self.current_path)))
                     self.find_subtitle_files()
-                    self.add_log(f'[현재 영상 경로 연결] {record["file_path"]}')
+                    self.add_log(f'[현재 영상 경로 연결] {self.current_path}')
             except (sqlite3.Error, OSError) as ex:
                 self.add_log(f"[색인 오류] {record.get('file_path','')}: {ex}")
         self.statusBar().showMessage(f"폴더 검색 완료: {len(records)}개 영상 확인")
@@ -1332,12 +1650,18 @@ class MainWindow(QMainWindow):
             self.channel_combo.blockSignals(False)
         text = f'%{self.search_input.text().strip()}%'
         channel = self.channel_combo.currentText()
-        filters = 'WHERE (title LIKE ? OR title_override LIKE ? OR channel LIKE ? OR memo LIKE ? OR video_id LIKE ?)'
-        params = [text] * 5
+        filters = ('WHERE (title LIKE ? OR title_override LIKE ? OR channel LIKE ? OR memo LIKE ? '
+                   'OR video_id LIKE ? OR major_category LIKE ? OR sub_category LIKE ? OR tags LIKE ?)')
+        params = [text] * 8
         if channel != '전체 채널':
             filters += ' AND channel=?'
             params.append(channel)
-        rows = self.db.execute(f"""SELECT video_id,title,title_override,channel,upload_date,memo,file_path
+        category = self.category_filter.currentText()
+        if category != '전체 분류':
+            filters += ' AND major_category=?'
+            params.append(category)
+        rows = self.db.execute(f"""SELECT video_id,title,title_override,channel,upload_date,memo,file_path,
+            file_size,major_category,sub_category,tags
             FROM videos {filters} ORDER BY upload_date DESC,title LIMIT 10000""", params).fetchall()
         table = self.library_table
         table.blockSignals(True)
@@ -1345,24 +1669,32 @@ class MainWindow(QMainWindow):
         missing = set()
         root = Path(self.root_input.text().strip())
         for rec in rows:
-            path = Path(rec['file_path'])
-            present = path.is_file() and is_in_directory(path, root)
+            try:
+                path = media_path(rec['file_path'])
+                present = path.is_file() and is_in_directory(path, root)
+                bytes_used = path.stat().st_size if present else int(rec['file_size'] or 0)
+            except (OSError, ValueError):
+                present, bytes_used = False, int(rec['file_size'] or 0)
             if not present:
                 missing.add(rec['video_id'])
                 if not self.show_missing.isChecked():
                     continue
-            visible.append((rec, present))
+            visible.append((rec, present, bytes_used))
         table.setRowCount(len(visible))
         selected_row = -1
-        for row_idx, (rec, present) in enumerate(visible):
+        for row_idx, (rec, present, bytes_used) in enumerate(visible):
             title = rec['title_override'] or rec['title']
-            values = [title, rec['channel'], rec['upload_date'],
+            values = [title, rec['channel'], rec['major_category'], rec['sub_category'],
+                      format_size(bytes_used), rec['upload_date'],
                       '●' if rec['memo'] else '', '있음' if present else '파일 없음']
             for col, val in enumerate(values):
-                item = QTableWidgetItem(val)
+                item = QTableWidgetItem(str(val))
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, rec['video_id'])
-                item.setToolTip(rec['file_path'] if col == 4 else str(val))
+                if col == 4:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                item.setToolTip(str(media_path(rec['file_path'])) if col == 7 else
+                                (rec['tags'] if col in (2, 3) and rec['tags'] else str(val)))
                 table.setItem(row_idx, col, item)
             if rec['video_id'] == self.current_id:
                 selected_row = row_idx
@@ -1375,7 +1707,7 @@ class MainWindow(QMainWindow):
             elif self._last_missing:
                 self.add_log('[파일 복구] 누락 영상이 다시 확인되었습니다')
             self._last_missing = missing
-        self.statusBar().showMessage(f'라이브러리 {len(visible)}개 표시 / 누락 {len(missing)}개 | DB/로그: {APP_DATA}')
+        self.statusBar().showMessage(f'라이브러리 {len(visible)}개 표시 / 누락 {len(missing)}개 | DB: {DB_PATH} | 로그: {LOG_PATH.parent}')
 
     def on_video_selected(self):
         selected = self.library_table.selectedItems()
@@ -1390,15 +1722,36 @@ class MainWindow(QMainWindow):
         row = self.db.execute("SELECT * FROM videos WHERE video_id=?", (video_id,)).fetchone()
         if row is None:
             return
-        if video_id == self.current_id and self.current_path == Path(row['file_path']):
+        try:
+            selected_path = media_path(row['file_path'])
+        except ValueError as ex:
+            self.add_log(f'[경로 오류] {ex}')
+            return
+        if video_id == self.current_id and self.current_path == selected_path:
             return
         self.save_memo(silent=True)
+        self.save_classification(silent=True)
         self.current_id = video_id
-        self.current_path = Path(row["file_path"])
-        self.video_info_label.setText(f"{row['channel']} · {row['title_override'] or row['title']}")
+        self.current_path = selected_path
+        self.video_info_label.setText(f"{row['channel']} · {row['title_override'] or row['title']} · {format_size(int(row['file_size']))}")
         self._loading_note = True
         self.memo_edit.setPlainText(row["memo"])
         self._loading_note = False
+        self._loading_category = True
+        try:
+            self.major_combo.setCurrentText(row['major_category'] if row['major_category'] in BADMINTON_CATEGORIES else '미분류')
+            self.on_major_changed(self.major_combo.currentText(), save=False)
+            idx = self.sub_combo.findText(row['sub_category'])
+            if idx >= 0:
+                self.sub_combo.setCurrentIndex(idx)
+            self.tags_edit.setText(row['tags'])
+        finally:
+            self._loading_category = False
+        self._segment_start = None
+        self._segment_end = None
+        self.mark_info.setText('시작 - / 끝 -')
+        self.mark_title.clear()
+        self.refresh_clip_marks()
         self.player.stop()
         self._pending_seek = None
         self.subtitle_now.clear()
@@ -1408,6 +1761,99 @@ class MainWindow(QMainWindow):
             self.player.setSource(QUrl())
             self.video_info_label.setText("파일이 존재하지 않습니다: " + str(self.current_path))
         self.find_subtitle_files()
+
+    def on_major_changed(self, major: str, save: bool = True):
+        self.sub_combo.blockSignals(True)
+        self.sub_combo.clear()
+        self.sub_combo.addItems(BADMINTON_CATEGORIES.get(major, ['미분류']))
+        self.sub_combo.blockSignals(False)
+        if save and not self._loading_category:
+            self.save_classification()
+
+    def save_classification(self, silent: bool = False):
+        if not self.current_id or self._loading_category:
+            return
+        major = self.major_combo.currentText() or '미분류'
+        sub = self.sub_combo.currentText() or '미분류'
+        tags = ', '.join(dict.fromkeys(
+            part.strip() for part in self.tags_edit.text().replace('，', ',').split(',')
+            if part.strip()))
+        with self.db:
+            self.db.execute('UPDATE videos SET major_category=?,sub_category=?,tags=?,updated_at=? '
+                            'WHERE video_id=?', (major, sub, tags, now_str(), self.current_id))
+        if not silent:
+            self.add_log(f'[분류 저장] {self.current_id} | {major} / {sub} | 태그: {tags}')
+            self.refresh_library()
+
+    def mark_start(self):
+        if not self.current_id:
+            return
+        self._segment_start = int(self.player.position())
+        self.update_mark_label()
+        self.add_log(f'[구간 시작] {self.current_id} {millis_text(self._segment_start)}')
+
+    def mark_end(self):
+        if not self.current_id:
+            return
+        self._segment_end = int(self.player.position())
+        self.update_mark_label()
+        self.add_log(f'[구간 종료] {self.current_id} {millis_text(self._segment_end)}')
+
+    def update_mark_label(self):
+        st = '-' if self._segment_start is None else millis_text(self._segment_start)
+        en = '-' if self._segment_end is None else millis_text(self._segment_end)
+        self.mark_info.setText(f'시작 {st} / 끝 {en}')
+
+    def save_clip_mark(self):
+        if not self.current_id:
+            QMessageBox.information(self, '영상 선택', '먼저 영상을 선택하세요.')
+            return
+        if (self._segment_start is None or self._segment_end is None
+                or self._segment_end <= self._segment_start):
+            QMessageBox.warning(self, '구간 확인', '시작점과 종료점을 순서대로 지정하세요 (종료 > 시작).')
+            return
+        title = self.mark_title.text().strip() or '영상 구간'
+        with self.db:
+            self.db.execute('INSERT INTO clip_marks(video_id,start_ms,end_ms,title,created_at) '
+                            'VALUES(?,?,?,?,?)', (self.current_id, self._segment_start,
+                                                self._segment_end, title, now_str()))
+        self.add_log(f'[구간 후보 저장] {self.current_id}: {title} '
+                     f'{millis_text(self._segment_start)} ~ {millis_text(self._segment_end)}')
+        self.refresh_clip_marks()
+
+    def refresh_clip_marks(self):
+        self.clip_list.clear()
+        if not self.current_id:
+            return
+        rows = self.db.execute('SELECT * FROM clip_marks WHERE video_id=? ORDER BY start_ms,id',
+                               (self.current_id,)).fetchall()
+        for mark in rows:
+            item = QListWidgetItem(f"{millis_text(mark['start_ms'])} ~ "
+                                   f"{millis_text(mark['end_ms'])} | {mark['title']}")
+            item.setData(Qt.ItemDataRole.UserRole, (mark['id'], mark['start_ms']))
+            self.clip_list.addItem(item)
+
+    def play_clip_mark(self, item=None):
+        if not isinstance(item, QListWidgetItem):
+            item = self.clip_list.currentItem()
+        if not item or not self.current_path or not self.current_path.is_file():
+            return
+        _, ms = item.data(Qt.ItemDataRole.UserRole)
+        self._pending_seek = int(ms)
+        self.player.play()
+        self._apply_pending_seek()
+        self.add_log(f'[구간 후보 재생] {self.current_id} | {millis_text(ms)}')
+
+    def delete_clip_mark(self):
+        item = self.clip_list.currentItem()
+        if item is None:
+            return
+        mark_id, _ = item.data(Qt.ItemDataRole.UserRole)
+        with self.db:
+            self.db.execute('DELETE FROM clip_marks WHERE id=? AND video_id=?',
+                            (mark_id, self.current_id))
+        self.add_log(f'[구간 후보 삭제] {self.current_id} / #{mark_id}')
+        self.refresh_clip_marks()
 
     def save_memo(self, silent=False):
         if not self.current_id or self._loading_note:
@@ -1576,7 +2022,7 @@ class MainWindow(QMainWindow):
         record = self.current_video_record()
         if not record:
             return
-        path = Path(record['file_path'])
+        path = media_path(record['file_path'])
         if not path.is_file():
             QMessageBox.warning(self, '파일 없음', '파일이 없습니다. 폴더 다시 검색으로 복구하세요.')
             return
@@ -1594,7 +2040,7 @@ class MainWindow(QMainWindow):
             result = move_media_bundle(path, Path(destination))
             with self.db:
                 self.db.execute('UPDATE videos SET file_path=?,updated_at=? WHERE video_id=?',
-                                (str(result), now_str(), record['video_id']))
+                                (root_relative(result), now_str(), record['video_id']))
             self.current_path = result
             self.player.setSource(QUrl.fromLocalFile(str(result)))
             self.find_subtitle_files()
@@ -1608,7 +2054,7 @@ class MainWindow(QMainWindow):
         record = self.current_video_record()
         if not record:
             return
-        path = Path(record['file_path'])
+        path = media_path(record['file_path'])
         if not path.is_file():
             QMessageBox.warning(self, '파일 없음', '파일이 없습니다. 폴더 다시 검색으로 복구하세요.')
             return
@@ -1630,7 +2076,7 @@ class MainWindow(QMainWindow):
             result = move_media_bundle(path, path.parent, stem)
             with self.db:
                 self.db.execute('UPDATE videos SET title_override=?,file_path=?,updated_at=? WHERE video_id=?',
-                                (clean_title, str(result), now_str(), record['video_id']))
+                                (clean_title, root_relative(result), now_str(), record['video_id']))
             self.current_path = result
             self.player.setSource(QUrl.fromLocalFile(str(result)))
             self.find_subtitle_files()
@@ -1645,7 +2091,7 @@ class MainWindow(QMainWindow):
         record = self.current_video_record()
         if not record:
             return
-        path = Path(record['file_path'])
+        path = media_path(record['file_path'])
         if not path.is_file():
             QMessageBox.information(self, '파일 없음', '해당 영상 파일이 이미 없습니다.')
             return
@@ -1693,6 +2139,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.save_memo(silent=True)
+        self.save_classification(silent=True)
         self.save_settings()
         set_setting(self.db, "split_outer", json.dumps(self.outer_splitter.sizes()))
         set_setting(self.db, "split_inner", json.dumps(self.inner_splitter.sizes()))
@@ -1703,9 +2150,59 @@ class MainWindow(QMainWindow):
         set_setting(self.db, 'jobs_col_widths',
                     json.dumps([self.jobs_table.columnWidth(i) for i in range(self.jobs_table.columnCount())]))
         self.player.stop()
+        try:
+            self.db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        except sqlite3.Error as ex:
+            LOGGER.warning('[DB WAL 체크포인트 실패] %s', ex)
         self.db.close()
         LOGGER.info("정상 종료")
         event.accept()
+
+
+def determine_start_root() -> Path | None:
+    """명령행/지난 루트/구버전 DB 순으로 선택; 경로가 사라지면 GUI로 재선택."""
+    requested = None
+    if '--root' in sys.argv:
+        idx = sys.argv.index('--root')
+        if idx + 1 >= len(sys.argv):
+            QMessageBox.critical(None, '--root 오류', '--root 뒤에 라이브러리 폴더 경로를 입력하세요.')
+            return None
+        requested = sys.argv[idx + 1]
+    if requested:
+        selected = Path(requested).expanduser()
+        if not selected.is_dir():
+            QMessageBox.critical(None, '라이브러리 폴더 없음',
+                                 f'지정한 라이브러리 폴더가 존재하지 않습니다:\n{selected}')
+            return None
+        return selected
+
+    last_root = None
+    if ROOT_POINTER.exists():
+        try:
+            last_root = json.loads(ROOT_POINTER.read_text(encoding='utf-8')).get('root')
+        except (OSError, ValueError, TypeError):
+            LOGGER.warning('[라이브러리 위치 힌트 손상] %s', ROOT_POINTER)
+
+    # 처음 V1.1 -> V1.2 업데이트할 때 저장돼 있던 사용자 지정 경로 우선 사용.
+    if not last_root and LEGACY_DB_PATH.is_file():
+        try:
+            with sqlite3.connect(str(LEGACY_DB_PATH), timeout=20) as db:
+                row = db.execute("SELECT value FROM settings WHERE key='download_root'").fetchone()
+                last_root = row[0] if row else None
+        except sqlite3.Error as ex:
+            LOGGER.warning('[이전 다운로드 경로 확인 실패] %s', ex)
+    if last_root:
+        old = Path(last_root)
+        if old.is_dir():
+            return old
+        QMessageBox.information(None, '라이브러리 위치 변경',
+            f'이전 영상 폴더를 찾지 못했습니다:\n{old}\n\n'
+            'minton.youtube 폴더 전체를 다른 디스크로 옮겼다면 새로운 위치를 지정하세요.\n'
+            '_database 폴더가 포함된 minton.youtube 최상위 폴더를 선택합니다.')
+        selected = QFileDialog.getExistingDirectory(None, '이동한 minton.youtube 라이브러리 폴더 선택',
+                                                     str(Path.home()))
+        return Path(selected) if selected else None
+    return Path(DEFAULT_ROOT)
 
 
 def main():
@@ -1715,10 +2212,23 @@ def main():
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Minton.VideoLibrary.1")
         except (OSError, AttributeError):
             pass
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
+    # Qt 옵션 충돌 방지를 위해 --root는 앱 자체에서 처리한다.
+    app = QApplication([sys.argv[0]])
+    app.setStyle('Fusion')
     app.setApplicationName(APP_TITLE)
-    window = MainWindow()
+    try:
+        selected_root = determine_start_root()
+        if selected_root is None:
+            return
+        set_library_root(selected_root)
+        init_db(migrate_old=True)
+        window = MainWindow()
+    except Exception as ex:
+        LOGGER.exception('[프로그램 시작 실패] DB 저장 경로/마이그레이션 오류')
+        QMessageBox.critical(None, '프로그램 시작 실패',
+                             f'{ex}\n\n기존 데이터베이스는 삭제하지 않았습니다.\n'
+                             f'이전 DB: {LEGACY_DB_PATH}\n새 DB: {DB_PATH}')
+        return
     window.show()
     sys.exit(app.exec())
 
